@@ -1,7 +1,6 @@
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
-
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
@@ -10,10 +9,8 @@ const io = socketIo(server, {
     methods: ["GET", "POST"]
   }
 });
-
 const PORT = process.env.PORT || 3000;
 
-// Serve a simple HTML page
 app.get('/', (req, res) => {
   res.send(`
     <!DOCTYPE html>
@@ -45,7 +42,6 @@ app.get('/', (req, res) => {
   `);
 });
 
-// Game Server Logic
 const players = {};
 let playerCount = 0;
 
@@ -64,16 +60,13 @@ io.on('connection', (socket) => {
     health: 100
   };
   
-  // Send initial data to new player
   socket.emit('init', {
     playerId: playerId,
     players: players
   });
   
-  // Tell everyone about new player
   socket.broadcast.emit('playerJoined', players[playerId]);
   
-  // Handle player movement
   socket.on('move', (data) => {
     if (players[playerId]) {
       players[playerId].position = data.position;
@@ -86,7 +79,6 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Handle shooting
   socket.on('shoot', (data) => {
     socket.broadcast.emit('playerShot', {
       playerId: playerId,
@@ -95,7 +87,6 @@ io.on('connection', (socket) => {
     });
   });
   
-  // Handle hits
   socket.on('hit', (data) => {
     if (players[data.targetId]) {
       players[data.targetId].health -= 25;
@@ -122,7 +113,17 @@ io.on('connection', (socket) => {
     }
   });
   
-  // Handle disconnection
+  // NEW: Handle chat messages
+  socket.on('chatMessage', (data) => {
+    if (players[playerId]) {
+      io.emit('chatMessage', {
+        username: `Player ${playerId.substring(0, 6)}`,
+        message: data.message
+      });
+      console.log(`💬 Chat from ${playerId.substring(0, 6)}: ${data.message}`);
+    }
+  });
+  
   socket.on('disconnect', () => {
     console.log('❌ Disconnected:', playerId);
     playerCount--;
