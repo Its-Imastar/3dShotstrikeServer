@@ -113,14 +113,15 @@ io.on('connection', (socket) => {
     }
   });
   
-  // NEW: Handle chat messages
+  // Handle quick chat messages
   socket.on('chatMessage', (data) => {
-    if (players[playerId]) {
+    if (players[playerId] && data.message) {
+      const message = data.message.substring(0, 50);
       io.emit('chatMessage', {
         username: `Player ${playerId.substring(0, 6)}`,
-        message: data.message
+        message: message
       });
-      console.log(`💬 Chat from ${playerId.substring(0, 6)}: ${data.message}`);
+      console.log(`💬 Chat from ${playerId.substring(0, 6)}: ${message}`);
     }
   });
   
