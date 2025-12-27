@@ -48,13 +48,16 @@ let playerCount = 0;
 let botIdCounter = 0;
 
 // Spawn points for bots
+// Update the spawnPoints array in your server code to:
 const spawnPoints = [
-  { x: -40, y: 1.67, z: -30 },
-  { x: 40, y: 1.67, z: -30 },
-  { x: -40, y: 1.67, z: 40 },
-  { x: 40, y: 1.67, z: 40 },
-  { x: 0, y: 1.67, z: -50 },
-  { x: 50, y: 1.67, z: 0 }
+  { x: -70, y: 1.67, z: 0 },
+  { x: 70, y: 1.67, z: 0 },
+  { x: 0, y: 1.67, z: -70 },
+  { x: 0, y: 1.67, z: 70 },
+  { x: -40, y: 3, z: -40 },
+  { x: 40, y: 3, z: -40 },
+  { x: -40, y: 3, z: 40 },
+  { x: 40, y: 3, z: 40 }
 ];
 
 function createBot() {
