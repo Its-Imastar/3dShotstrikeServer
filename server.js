@@ -14,7 +14,8 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-  res.send(/* your status page HTML */);
+  // Your status page HTML
+  res.send(`...`);
 });
 
 const players = {};
@@ -36,8 +37,17 @@ io.on('connection', (socket) => {
     score: 0,
     health: 100,
     username: `Guest${Math.floor(Math.random() * 9999)}`,
-    isDead: false  // NEW: track death state
+    isImmune: true,  // NEW: immune on spawn
+    immuneUntil: Date.now() + 3000  // 3 seconds immunity
   };
+
+  // Grant immunity on spawn
+  setTimeout(() => {
+    if (players[playerId]) {
+      players[playerId].isImmune = false;
+      console.log(`Immunity ended for ${players[playerId].username}`);
+    }
+  }, 3000);
 
   socket.emit('init', {
     playerId: playerId,
@@ -81,56 +91,50 @@ io.on('connection', (socket) => {
     });
   });
 
-  // === FIXED HIT LOGIC ===
   socket.on('hit', (data) => {
     const target = players[data.targetId];
     const attacker = players[playerId];
 
     if (!target || !attacker) return;
 
-    // NEW: Ignore hits on players who are currently dead/respawning
-    if (target.isDead) return;
+    // === IMMUNITY CHECK ===
+    if (target.isImmune || Date.now() < target.immuneUntil) {
+      return; // Ignore all damage during immunity
+    }
 
     target.health -= 25;
     attacker.score += 10;
 
     if (target.health <= 0) {
       target.health = 100;
-      target.isDead = true;  // Mark as dead
-
       attacker.score += 50;
+
+      // Grant immunity on respawn
+      target.isImmune = true;
+      target.immuneUntil = Date.now() + 3000;
 
       io.emit('playerDied', {
         targetId: data.targetId,
         killerId: playerId
       });
 
-      // Respawn after delay (matches client deathCamDuration = 3 seconds)
+      // End immunity after 3 seconds
       setTimeout(() => {
         if (players[data.targetId]) {
-          players[data.targetId].isDead = false;
-          players[data.targetId].health = 100;
-
-          // Optional: move to spawn point
-          players[data.targetId].position = { x: 0, y: 1.6, z: 15 };
-
-          // Notify clients of position update (so body disappears from death spot)
-          io.emit('playerMoved', {
-            playerId: data.targetId,
-            position: players[data.targetId].position,
-            rotation: players[data.targetId].rotation
-          });
-
-          // Send health update so UI refreshes correctly
-          io.emit('playerHit', {
-            targetId: data.targetId,
-            health: 100
-          });
+          players[data.targetId].isImmune = false;
         }
-      }, 3000); // 3 seconds = matches client death cam duration
+      }, 3000);
+
+      // Respawn: teleport to spawn point
+      target.position = { x: 0, y: 1.6, z: 15 };
+      io.emit('playerMoved', {
+        playerId: data.targetId,
+        position: target.position,
+        rotation: target.rotation
+      });
     }
 
-    // Always send these updates
+    // Send updates
     io.emit('playerHit', {
       targetId: data.targetId,
       health: target.health
