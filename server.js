@@ -14,8 +14,34 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-  // Your status page HTML
-  res.send(`...`);
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Shotstrike Server</title>
+      <style>
+        body { font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: white; }
+        h1 { color: #2563eb; }
+        .status { background: #10b981; color: white; padding: 20px; border-radius: 10px; display: inline-block; }
+      </style>
+    </head>
+    <body>
+      <h1>🎮 Shotstrike Server</h1>
+      <div class="status">
+        <h2>✅ Server is Running!</h2>
+        <p>Connect your game to: <strong>${req.headers.host}</strong></p>
+        <p>Players online: <span id="playerCount">0</span></p>
+      </div>
+      <script>
+        const socket = io();
+        socket.on('playerCount', (count) => {
+          document.getElementById('playerCount').textContent = count;
+        });
+      </script>
+      <script src="/socket.io/socket.io.js"></script>
+    </body>
+    </html>
+  `);
 });
 
 const players = {};
@@ -37,15 +63,14 @@ io.on('connection', (socket) => {
     score: 0,
     health: 100,
     username: `Guest${Math.floor(Math.random() * 9999)}`,
-    isImmune: true,  // NEW: immune on spawn
-    immuneUntil: Date.now() + 3000  // 3 seconds immunity
+    isImmune: true  // Immune for 3 seconds on first spawn
   };
 
-  // Grant immunity on spawn
+  // Remove initial spawn immunity after 3 seconds
   setTimeout(() => {
     if (players[playerId]) {
       players[playerId].isImmune = false;
-      console.log(`Immunity ended for ${players[playerId].username}`);
+      console.log(`Initial spawn immunity ended for ${players[playerId].username}`);
     }
   }, 3000);
 
@@ -56,13 +81,16 @@ io.on('connection', (socket) => {
 
   socket.broadcast.emit('playerJoined', players[playerId]);
 
+  // Handle username setting from client
   socket.on('setUsername', (newUsername) => {
     if (typeof newUsername === 'string') {
       let cleanUsername = newUsername.trim().substring(0, 20);
       cleanUsername = cleanUsername.replace(/[^a-zA-Z0-9_]/g, '');
       if (cleanUsername.length === 0) cleanUsername = `Guest${Math.floor(Math.random() * 9999)}`;
       if (cleanUsername.length > 0 && players[playerId]) {
+        const oldUsername = players[playerId].username;
         players[playerId].username = cleanUsername;
+        console.log(`✏️ Username changed: ${oldUsername} → ${cleanUsername}`);
         io.emit('playerUsernameUpdated', {
           playerId: playerId,
           username: cleanUsername
@@ -91,16 +119,15 @@ io.on('connection', (socket) => {
     });
   });
 
+  // Hit & Death logic with proper spawn immunity
   socket.on('hit', (data) => {
     const target = players[data.targetId];
     const attacker = players[playerId];
 
     if (!target || !attacker) return;
 
-    // === IMMUNITY CHECK ===
-    if (target.isImmune || Date.now() < target.immuneUntil) {
-      return; // Ignore all damage during immunity
-    }
+    // Ignore damage if target is currently immune
+    if (target.isImmune) return;
 
     target.health -= 25;
     attacker.score += 10;
@@ -109,32 +136,49 @@ io.on('connection', (socket) => {
       target.health = 100;
       attacker.score += 50;
 
-      // Grant immunity on respawn
-      target.isImmune = true;
-      target.immuneUntil = Date.now() + 3000;
-
       io.emit('playerDied', {
         targetId: data.targetId,
         killerId: playerId
       });
 
-      // End immunity after 3 seconds
+      // Respawn after 3 seconds (matches client death cam duration)
       setTimeout(() => {
         if (players[data.targetId]) {
-          players[data.targetId].isImmune = false;
-        }
-      }, 3000);
+          const respawnedPlayer = players[data.targetId];
 
-      // Respawn: teleport to spawn point
-      target.position = { x: 0, y: 1.6, z: 15 };
-      io.emit('playerMoved', {
-        playerId: data.targetId,
-        position: target.position,
-        rotation: target.rotation
-      });
+          // Teleport to spawn point
+          respawnedPlayer.position = { x: 0, y: 1.6, z: 15 };
+
+          // Grant 3-second immunity ONLY on respawn
+          respawnedPlayer.isImmune = true;
+
+          // Broadcast new position immediately
+          io.emit('playerMoved', {
+            playerId: data.targetId,
+            position: respawnedPlayer.position,
+            rotation: respawnedPlayer.rotation
+          });
+
+          // Update health UI
+          io.emit('playerHit', {
+            targetId: data.targetId,
+            health: 100
+          });
+
+          console.log(`Player ${respawnedPlayer.username} respawned with 3s immunity`);
+
+          // End respawn immunity after 3 seconds
+          setTimeout(() => {
+            if (players[data.targetId]) {
+              players[data.targetId].isImmune = false;
+              console.log(`Respawn immunity ended for ${players[data.targetId].username}`);
+            }
+          }, 3000);
+        }
+      }, 3000); // Death cam duration
     }
 
-    // Send updates
+    // Send normal hit/score updates
     io.emit('playerHit', {
       targetId: data.targetId,
       health: target.health
@@ -153,6 +197,7 @@ io.on('connection', (socket) => {
         username: players[playerId].username,
         message: message
       });
+      console.log(`💬 Chat from ${players[playerId].username}: ${message}`);
     }
   });
 
@@ -167,4 +212,5 @@ io.on('connection', (socket) => {
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`🌐 Visit: http://localhost:${PORT}`);
 });
