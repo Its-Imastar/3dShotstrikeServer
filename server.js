@@ -14,34 +14,7 @@ const io = socketIo(server, {
 const PORT = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>FPS Game Server</title>
-      <style>
-        body { font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: white; }
-        h1 { color: #2563eb; }
-        .status { background: #10b981; color: white; padding: 20px; border-radius: 10px; display: inline-block; }
-      </style>
-    </head>
-    <body>
-      <h1>🎮 Shotstrike Server</h1>
-      <div class="status">
-        <h2>✅ Server is Running!</h2>
-        <p>Connect your game to: <strong>${req.headers.host}</strong></p>
-        <p>Players online: <span id="playerCount">0</span></p>
-      </div>
-      <script>
-        const socket = io();
-        socket.on('playerCount', (count) => {
-          document.getElementById('playerCount').textContent = count;
-        });
-      </script>
-      <script src="/socket.io/socket.io.js"></script>
-    </body>
-    </html>
-  `);
+  res.send(/* your status page HTML */);
 });
 
 const players = {};
@@ -54,7 +27,6 @@ io.on('connection', (socket) => {
 
   const playerId = socket.id;
 
-  // Default username if client doesn't send one
   players[playerId] = {
     id: playerId,
     socketId: socket.id,
@@ -63,7 +35,8 @@ io.on('connection', (socket) => {
     color: Math.floor(Math.random() * 0xffffff),
     score: 0,
     health: 100,
-    username: `Guest${Math.floor(Math.random() * 9999)}`  // fallback
+    username: `Guest${Math.floor(Math.random() * 9999)}`,
+    isDead: false  // NEW: track death state
   };
 
   socket.emit('init', {
@@ -73,19 +46,17 @@ io.on('connection', (socket) => {
 
   socket.broadcast.emit('playerJoined', players[playerId]);
 
-  // === NEW: Handle username setting from client ===
   socket.on('setUsername', (newUsername) => {
     if (typeof newUsername === 'string') {
-      let cleanUsername = newUsername.trim();
-      if (cleanUsername.length > 20) cleanUsername = cleanUsername.substring(0, 20);
-      if (cleanUsername.length === 0) cleanUsername = `Guest${Math.floor(Math.random() * 9999)}`;
-
-      // Optional: simple filter for bad words / characters
+      let cleanUsername = newUsername.trim().substring(0, 20);
       cleanUsername = cleanUsername.replace(/[^a-zA-Z0-9_]/g, '');
-
-      if (cleanUsername.length > 0) {
-        console.log(`✏️ ${playerId.substring(0, 6)} set username to: ${cleanUsername}`);
+      if (cleanUsername.length === 0) cleanUsername = `Guest${Math.floor(Math.random() * 9999)}`;
+      if (cleanUsername.length > 0 && players[playerId]) {
         players[playerId].username = cleanUsername;
+        io.emit('playerUsernameUpdated', {
+          playerId: playerId,
+          username: cleanUsername
+        });
       }
     }
   });
@@ -110,41 +81,74 @@ io.on('connection', (socket) => {
     });
   });
 
+  // === FIXED HIT LOGIC ===
   socket.on('hit', (data) => {
-    if (players[data.targetId]) {
-      players[data.targetId].health -= 25;
-      players[playerId].score += 10;
+    const target = players[data.targetId];
+    const attacker = players[playerId];
 
-      if (players[data.targetId].health <= 0) {
-        players[data.targetId].health = 100;
-        players[playerId].score += 50;
-        io.emit('playerDied', {
-          targetId: data.targetId,
-          killerId: playerId
-        });
-      }
+    if (!target || !attacker) return;
 
-      io.emit('playerHit', {
+    // NEW: Ignore hits on players who are currently dead/respawning
+    if (target.isDead) return;
+
+    target.health -= 25;
+    attacker.score += 10;
+
+    if (target.health <= 0) {
+      target.health = 100;
+      target.isDead = true;  // Mark as dead
+
+      attacker.score += 50;
+
+      io.emit('playerDied', {
         targetId: data.targetId,
-        health: players[data.targetId].health
+        killerId: playerId
       });
 
-      io.emit('scoreUpdate', {
-        playerId: playerId,
-        score: players[playerId].score
-      });
+      // Respawn after delay (matches client deathCamDuration = 3 seconds)
+      setTimeout(() => {
+        if (players[data.targetId]) {
+          players[data.targetId].isDead = false;
+          players[data.targetId].health = 100;
+
+          // Optional: move to spawn point
+          players[data.targetId].position = { x: 0, y: 1.6, z: 15 };
+
+          // Notify clients of position update (so body disappears from death spot)
+          io.emit('playerMoved', {
+            playerId: data.targetId,
+            position: players[data.targetId].position,
+            rotation: players[data.targetId].rotation
+          });
+
+          // Send health update so UI refreshes correctly
+          io.emit('playerHit', {
+            targetId: data.targetId,
+            health: 100
+          });
+        }
+      }, 3000); // 3 seconds = matches client death cam duration
     }
+
+    // Always send these updates
+    io.emit('playerHit', {
+      targetId: data.targetId,
+      health: target.health
+    });
+
+    io.emit('scoreUpdate', {
+      playerId: playerId,
+      score: attacker.score
+    });
   });
 
-  // === FIXED: Use real username in chat ===
   socket.on('chatMessage', (data) => {
     if (players[playerId] && data.message) {
-      const message = data.message.substring(0, 100); // slightly longer limit
+      const message = data.message.substring(0, 100);
       io.emit('chatMessage', {
         username: players[playerId].username,
         message: message
       });
-      console.log(`💬 Chat from ${players[playerId].username}: ${message}`);
     }
   });
 
@@ -159,5 +163,4 @@ io.on('connection', (socket) => {
 
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌐 Visit: http://localhost:${PORT}`);
 });
