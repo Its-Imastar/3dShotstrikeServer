@@ -64,7 +64,8 @@ io.on('connection', (socket) => {
     health: 100,
     username: `Guest${Math.floor(Math.random() * 9999)}`,
     isImmune: true,      // Immune on first spawn
-    visible: true        // For hiding dead players
+    visible: true,       // For hiding dead players
+    isDead: false        // Prevents damage during death cam
   };
 
   // Remove initial spawn immunity after 3 seconds
@@ -120,15 +121,15 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Hit & Death logic with hiding dead players + respawn immunity
+  // Hit & Death logic with full protection during death cam
   socket.on('hit', (data) => {
     const target = players[data.targetId];
     const attacker = players[playerId];
 
     if (!target || !attacker) return;
 
-    // Ignore damage if target is immune
-    if (target.isImmune) return;
+    // Ignore hits if target is dead (in death cam) or immune
+    if (target.isDead || target.isImmune) return;
 
     target.health -= 25;
     attacker.score += 10;
@@ -137,8 +138,10 @@ io.on('connection', (socket) => {
       target.health = 100;
       attacker.score += 50;
 
-      // Hide the dead player immediately
+      // Mark as dead and hide immediately
+      target.isDead = true;
       target.visible = false;
+
       io.emit('playerVisibilityUpdate', {
         playerId: data.targetId,
         visible: false
@@ -156,6 +159,9 @@ io.on('connection', (socket) => {
 
           // Teleport to spawn point
           respawnedPlayer.position = { x: 0, y: 1.6, z: 15 };
+
+          // Clear dead state
+          respawnedPlayer.isDead = false;
 
           // Make visible again
           respawnedPlayer.visible = true;
