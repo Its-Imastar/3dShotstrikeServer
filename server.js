@@ -187,11 +187,12 @@ io.on('connection', (socket) => {
                   setTimeout(() => {
                       if (players[data.targetId]) {
                           players[data.targetId].isImmune = false;
-                      }
-                  }, 3000);
-              }
-          }, 3000);
-      }
+                    }
+                }, 3000);
+            }
+        }, 3000);
+    }
+};
 
     // Normal hit feedback
     io.emit('playerHit', {
