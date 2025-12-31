@@ -63,7 +63,8 @@ io.on('connection', (socket) => {
     score: 0,
     health: 100,
     username: `Guest${Math.floor(Math.random() * 9999)}`,
-    isImmune: true  // Immune for 3 seconds on first spawn
+    isImmune: true,      // Immune on first spawn
+    visible: true        // For hiding dead players
   };
 
   // Remove initial spawn immunity after 3 seconds
@@ -119,14 +120,14 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Hit & Death logic with proper spawn immunity
+  // Hit & Death logic with hiding dead players + respawn immunity
   socket.on('hit', (data) => {
     const target = players[data.targetId];
     const attacker = players[playerId];
 
     if (!target || !attacker) return;
 
-    // Ignore damage if target is currently immune
+    // Ignore damage if target is immune
     if (target.isImmune) return;
 
     target.health -= 25;
@@ -136,12 +137,19 @@ io.on('connection', (socket) => {
       target.health = 100;
       attacker.score += 50;
 
+      // Hide the dead player immediately
+      target.visible = false;
+      io.emit('playerVisibilityUpdate', {
+        playerId: data.targetId,
+        visible: false
+      });
+
       io.emit('playerDied', {
         targetId: data.targetId,
         killerId: playerId
       });
 
-      // Respawn after 3 seconds (matches client death cam duration)
+      // Respawn after 3 seconds
       setTimeout(() => {
         if (players[data.targetId]) {
           const respawnedPlayer = players[data.targetId];
@@ -149,17 +157,24 @@ io.on('connection', (socket) => {
           // Teleport to spawn point
           respawnedPlayer.position = { x: 0, y: 1.6, z: 15 };
 
-          // Grant 3-second immunity ONLY on respawn
+          // Make visible again
+          respawnedPlayer.visible = true;
+
+          // Grant 3-second immunity on respawn
           respawnedPlayer.isImmune = true;
 
-          // Broadcast new position immediately
+          // Broadcast updates
           io.emit('playerMoved', {
             playerId: data.targetId,
             position: respawnedPlayer.position,
             rotation: respawnedPlayer.rotation
           });
 
-          // Update health UI
+          io.emit('playerVisibilityUpdate', {
+            playerId: data.targetId,
+            visible: true
+          });
+
           io.emit('playerHit', {
             targetId: data.targetId,
             health: 100
@@ -167,11 +182,10 @@ io.on('connection', (socket) => {
 
           console.log(`Player ${respawnedPlayer.username} respawned with 3s immunity`);
 
-          // End respawn immunity after 3 seconds
+          // End immunity after 3 seconds
           setTimeout(() => {
             if (players[data.targetId]) {
               players[data.targetId].isImmune = false;
-              console.log(`Respawn immunity ended for ${players[data.targetId].username}`);
             }
           }, 3000);
         }
