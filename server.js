@@ -120,91 +120,63 @@ io.on('connection', (socket) => {
   });
 
   // Hit & Death logic with proper spawn immunity
-// Updated 'hit' handler in server.js to hide dead players for 3 seconds
   socket.on('hit', (data) => {
-      const target = players[data.targetId];
-      const attacker = players[playerId];
-  
-      if (!target || !attacker) return;
-  
-      // Ignore damage if target is immune
-      if (target.isImmune) return;
-  
-      target.health -= 25;
-      attacker.score += 10;
-  
-      if (target.health <= 0) {
-          target.health = 100;
-          attacker.score += 50;
-  
-          // Broadcast death (triggers death cam on victim's client)
-          io.emit('playerDied', {
-              targetId: data.targetId,
-              killerId: playerId
-          });
-  
-          // Hide the dead player from everyone (set visible = false)
-          target.visible = false;
-  
-          // Broadcast that the player is now invisible
-          io.emit('playerVisibilityUpdate', {
-              playerId: data.targetId,
-              visible: false
-          });
-  
-          // Respawn after 3 seconds
-          setTimeout(() => {
-              if (players[data.targetId]) {
-                  const respawned = players[data.targetId];
-  
-                  // Teleport to spawn
-                  respawned.position = { x: 0, y: 1.6, z: 15 };
-  
-                  // Make visible again
-                  respawned.visible = true;
-  
-                  // Grant 3s immunity on respawn
-                  respawned.isImmune = true;
-  
-                  // Broadcast new position and visibility
-                  io.emit('playerMoved', {
-                      playerId: data.targetId,
-                      position: respawned.position,
-                      rotation: respawned.rotation
-                  });
-  
-                  io.emit('playerVisibilityUpdate', {
-                      playerId: data.targetId,
-                      visible: true
-                  });
-  
-                  io.emit('playerHit', {
-                      targetId: data.targetId,
-                      health: 100
-                  });
-  
-                  // End immunity after 3s
-                  setTimeout(() => {
-                      if (players[data.targetId]) {
-                          players[data.targetId].isImmune = false;
-                    }
-                }, 3000);
-            }
-        }, 3000);
-    }
-};
+    const target = players[data.targetId];
+    const attacker = players[playerId];
 
-    // Normal hit feedback
-    io.emit('playerHit', {
+    if (!target || !attacker) return;
+
+    // Ignore damage if target is currently immune
+    if (target.isImmune) return;
+
+    target.health -= 25;
+    attacker.score += 10;
+
+    if (target.health <= 0) {
+      target.health = 100;
+      attacker.score += 50;
+
+      io.emit('playerDied', {
         targetId: data.targetId,
-        health: target.health
-    });
+        killerId: playerId
+      });
 
-    io.emit('scoreUpdate', {
-        playerId: playerId,
-        score: attacker.score
-    });
-});
+      // Respawn after 3 seconds (matches client death cam duration)
+      setTimeout(() => {
+        if (players[data.targetId]) {
+          const respawnedPlayer = players[data.targetId];
+
+          // Teleport to spawn point
+          respawnedPlayer.position = { x: 0, y: 1.6, z: 15 };
+
+          // Grant 3-second immunity ONLY on respawn
+          respawnedPlayer.isImmune = true;
+
+          // Broadcast new position immediately
+          io.emit('playerMoved', {
+            playerId: data.targetId,
+            position: respawnedPlayer.position,
+            rotation: respawnedPlayer.rotation
+          });
+
+          // Update health UI
+          io.emit('playerHit', {
+            targetId: data.targetId,
+            health: 100
+          });
+
+          console.log(`Player ${respawnedPlayer.username} respawned with 3s immunity`);
+
+          // End respawn immunity after 3 seconds
+          setTimeout(() => {
+            if (players[data.targetId]) {
+              players[data.targetId].isImmune = false;
+              console.log(`Respawn immunity ended for ${players[data.targetId].username}`);
+            }
+          }, 3000);
+        }
+      }, 3000); // Death cam duration
+    }
 
     // Send normal hit/score updates
     io.emit('playerHit', {
