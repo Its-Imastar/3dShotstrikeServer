@@ -1,7 +1,7 @@
+// server.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
-const path = require('path');
 
 const app = express();
 const server = http.createServer(app);
@@ -55,12 +55,71 @@ const shopItems = {
     ]
 };
 
-// Serve static files from public directory
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Default route
+// Serve a simple status page at root
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Shotstrike Server</title>
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background: #1a1a1a;
+                    color: white;
+                    display: flex;
+                    justify-content: center;
+                    align-items: center;
+                    height: 100vh;
+                    margin: 0;
+                }
+                .container {
+                    text-align: center;
+                    background: rgba(0, 0, 0, 0.7);
+                    padding: 40px;
+                    border-radius: 10px;
+                    border: 2px solid #2563eb;
+                }
+                h1 {
+                    color: #60a5fa;
+                    margin-bottom: 20px;
+                }
+                .status {
+                    color: #22c55e;
+                    font-weight: bold;
+                    font-size: 1.2em;
+                }
+                .players {
+                    margin-top: 20px;
+                    color: #fbbf24;
+                }
+                .info {
+                    margin-top: 20px;
+                    color: #9ca3af;
+                    font-size: 0.9em;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>🎮 Shotstrike Server</h1>
+                <div class="status">✅ Server is running</div>
+                <div class="players">👥 Players online: ${Object.keys(players).length}</div>
+                <div class="info">Connect using the Shotstrike game client</div>
+                <div class="info">Port: ${PORT}</div>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
+// API endpoint to get server status
+app.get('/status', (req, res) => {
+    res.json({
+        status: 'online',
+        players: Object.keys(players).length,
+        uptime: process.uptime()
+    });
 });
 
 io.on('connection', (socket) => {
@@ -87,17 +146,26 @@ io.on('connection', (socket) => {
         color: Math.floor(Math.random() * 0xffffff),
         health: 100,
         score: 0,
+        kills: 0,
+        deaths: 0,
         equipped: {
             skin: 'default',
             weapon: 'default',
             trail: 'none'
+        },
+        coins: 0, // Simulated coin balance
+        ownedItems: {
+            skins: ['default'],
+            weapons: ['default'],
+            trails: ['none']
         }
     };
     
     // Send initial game data to the player
     socket.emit('init', {
         playerId: socket.id,
-        players: players
+        players: players,
+        username: username
     });
     
     // Notify other players about the new player
@@ -150,7 +218,8 @@ io.on('connection', (socket) => {
         socket.broadcast.emit('playerShot', {
             playerId: socket.id,
             from: data.from,
-            direction: data.direction
+            direction: data.direction,
+            trail: players[socket.id]?.equipped?.trail || 'none'
         });
     });
     
@@ -167,21 +236,32 @@ io.on('connection', (socket) => {
             // Update the hit player
             io.to(data.targetId).emit('playerHit', {
                 health: targetPlayer.health,
-                shooterId: socket.id
+                shooterId: socket.id,
+                damage: weapon.damage
             });
+            
+            // Award coins for hit
+            shooter.coins += 1;
+            socket.emit('coinsUpdate', { coins: shooter.coins });
             
             // Check if player died
             if (targetPlayer.health <= 0) {
                 targetPlayer.health = 0;
+                targetPlayer.deaths += 1;
                 
-                // Award points to shooter
+                // Award points and coins to shooter
                 shooter.score += 100;
+                shooter.kills += 1;
+                shooter.coins += 5;
                 
                 // Notify both players
                 io.to(socket.id).emit('scoreUpdate', {
                     playerId: socket.id,
-                    score: shooter.score
+                    score: shooter.score,
+                    kills: shooter.kills
                 });
+                
+                io.to(socket.id).emit('coinsUpdate', { coins: shooter.coins });
                 
                 io.to(data.targetId).emit('playerDied', {
                     killerId: socket.id,
@@ -229,7 +309,8 @@ io.on('connection', (socket) => {
             // Broadcast message to all players
             io.emit('chatMessage', {
                 username: players[socket.id].username,
-                message: data.message.trim()
+                message: data.message.trim(),
+                playerId: socket.id
             });
         }
     });
@@ -244,18 +325,43 @@ io.on('connection', (socket) => {
         
         // Find the item
         const itemList = shopItems[category];
-        if (!itemList) return;
+        if (!itemList) {
+            socket.emit('shopError', { message: 'Invalid category' });
+            return;
+        }
         
         const item = itemList.find(i => i.id === itemId);
-        if (!item) return;
+        if (!item) {
+            socket.emit('shopError', { message: 'Item not found' });
+            return;
+        }
         
-        // Check if player already owns it (server-side storage would be needed)
-        // For now, we'll just allow purchase and send success
+        // Check if player already owns it
+        if (player.ownedItems[category].includes(itemId)) {
+            socket.emit('shopError', { message: 'Already owned' });
+            return;
+        }
+        
+        // Check if player has enough coins
+        if (player.coins < item.price) {
+            socket.emit('shopError', { 
+                message: `Not enough coins! Need ${item.price} but only have ${player.coins}` 
+            });
+            return;
+        }
+        
+        // Process purchase
+        player.coins -= item.price;
+        player.ownedItems[category].push(itemId);
+        
         socket.emit('itemPurchased', {
             category: category,
             itemId: itemId,
-            success: true
+            coins: player.coins,
+            ownedItems: player.ownedItems
         });
+        
+        socket.emit('coinsUpdate', { coins: player.coins });
     });
     
     // Handle item equipping
@@ -266,6 +372,12 @@ io.on('connection', (socket) => {
         const category = data.category;
         const itemId = data.itemId;
         
+        // Check if player owns the item
+        if (!player.ownedItems[category].includes(itemId)) {
+            socket.emit('shopError', { message: 'You don\'t own this item' });
+            return;
+        }
+        
         // Update equipped item
         player.equipped[category] = itemId;
         
@@ -274,14 +386,57 @@ io.on('connection', (socket) => {
             const skin = shopItems.skins.find(s => s.id === itemId);
             if (skin) {
                 player.color = skin.color;
+                
+                // Notify all players about color change
+                io.emit('playerColorChanged', {
+                    playerId: socket.id,
+                    color: skin.color
+                });
             }
         }
         
         socket.emit('itemEquipped', {
             category: category,
             itemId: itemId,
-            success: true
+            equipped: player.equipped
         });
+        
+        // If it's a weapon, notify about stats change
+        if (category === 'weapon') {
+            const weapon = shopItems.weapons.find(w => w.id === itemId);
+            if (weapon) {
+                socket.emit('weaponChanged', {
+                    damage: weapon.damage,
+                    fireRate: weapon.fireRate,
+                    ammo: weapon.ammo
+                });
+            }
+        }
+    });
+    
+    // Handle coin awards (for singleplayer actions)
+    socket.on('addCoins', (data) => {
+        const player = players[socket.id];
+        if (player && data.amount) {
+            player.coins += data.amount;
+            socket.emit('coinsUpdate', { coins: player.coins });
+        }
+    });
+    
+    // Handle player stats request
+    socket.on('getStats', () => {
+        const player = players[socket.id];
+        if (player) {
+            socket.emit('playerStats', {
+                username: player.username,
+                score: player.score,
+                kills: player.kills,
+                deaths: player.deaths,
+                coins: player.coins,
+                equipped: player.equipped,
+                ownedItems: player.ownedItems
+            });
+        }
     });
     
     // Handle player disconnect
@@ -304,7 +459,31 @@ io.on('connection', (socket) => {
     });
 });
 
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error(err.stack);
+    res.status(500).send('Server error!');
+});
+
+// Handle 404
+app.use((req, res) => {
+    res.status(404).send(`
+        <html>
+        <head><title>404 - Not Found</title></head>
+        <body style="background: #1a1a1a; color: white; font-family: Arial; display: flex; justify-content: center; align-items: center; height: 100vh;">
+            <div style="text-align: center;">
+                <h1 style="color: #ef4444;">404 - Not Found</h1>
+                <p>This is the Shotstrike game server API.</p>
+                <p>Connect using the game client or visit the <a href="/" style="color: #60a5fa;">status page</a>.</p>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
 // Start server
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`🎮 Shotstrike server running on port ${PORT}`);
+    console.log(`🌐 Status page: http://localhost:${PORT}`);
+    console.log(`📊 API status: http://localhost:${PORT}/status`);
 });
