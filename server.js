@@ -1,236 +1,173 @@
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
+const express = require("express");
+const http = require("http");
+const socketIo = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+  cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 const PORT = process.env.PORT || 3000;
 
-app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <title>Shotstrike Server</title>
-      <style>
-        body { font-family: Arial; text-align: center; padding: 50px; background: #1a1a1a; color: white; }
-        h1 { color: #2563eb; }
-        .status { background: #10b981; color: white; padding: 20px; border-radius: 10px; display: inline-block; }
-      </style>
-    </head>
-    <body>
-      <h1>🎮 Shotstrike Server</h1>
-      <div class="status">
-        <h2>✅ Server is Running!</h2>
-        <p>Connect your game to: <strong>${req.headers.host}</strong></p>
-        <p>Players online: <span id="playerCount">0</span></p>
-      </div>
-      <script>
-        const socket = io();
-        socket.on('playerCount', (count) => {
-          document.getElementById('playerCount').textContent = count;
-        });
-      </script>
-      <script src="/socket.io/socket.io.js"></script>
-    </body>
-    </html>
-  `);
-});
+/* ================== GAME DATA ================== */
+
+const WEAPONS = {
+  pistol: { damage: 20, fireRate: 400 },
+  rifle: { damage: 25, fireRate: 120 },
+  sniper: { damage: 80, fireRate: 900 }
+};
+
+const SKINS = ["default", "red", "blue", "gold"];
+const TRAILS = ["default", "laser", "electric"];
 
 const players = {};
+const lastHitTime = {};
+const lastShot = {};
 let playerCount = 0;
 
-io.on('connection', (socket) => {
-  console.log('🔗 New connection:', socket.id);
+/* ================== WEB PAGE ================== */
+
+app.get("/", (req, res) => {
+  res.send(`<h1 style="color:white;background:#111;padding:40px;text-align:center">
+    🎮 Shotstrike Server Running<br>
+    Players online: <span id="count">0</span>
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+      const s = io();
+      s.on("playerCount", c => document.getElementById("count").textContent = c);
+    </script>
+  </h1>`);
+});
+
+/* ================== SOCKET LOGIC ================== */
+
+io.on("connection", (socket) => {
   playerCount++;
-  io.emit('playerCount', playerCount);
+  io.emit("playerCount", playerCount);
 
-  const playerId = socket.id;
+  const id = socket.id;
 
-  players[playerId] = {
-    id: playerId,
-    socketId: socket.id,
+  players[id] = {
+    id,
     position: { x: 0, y: 1.6, z: 15 },
     rotation: { x: 0, y: 0 },
-    color: Math.floor(Math.random() * 0xffffff),
-    score: 0,
     health: 100,
+    score: 0,
     username: `Guest${Math.floor(Math.random() * 9999)}`,
-    isImmune: true,      // Immune on first spawn
-    visible: true,       // For hiding dead players
-    isDead: false        // Prevents damage during death cam
+    weapon: "rifle",
+    skin: "default",
+    trail: "default",
+    isImmune: true,
+    isDead: false,
+    visible: true
   };
 
-  // Remove initial spawn immunity after 3 seconds
   setTimeout(() => {
-    if (players[playerId]) {
-      players[playerId].isImmune = false;
-      console.log(`Initial spawn immunity ended for ${players[playerId].username}`);
-    }
+    if (players[id]) players[id].isImmune = false;
   }, 3000);
 
-  socket.emit('init', {
-    playerId: playerId,
-    players: players
+  socket.emit("init", { playerId: id, players });
+  socket.broadcast.emit("playerJoined", players[id]);
+
+  socket.on("setUsername", (name) => {
+    if (!players[id]) return;
+    players[id].username = name.substring(0, 16);
+    io.emit("playerUsernameUpdated", { playerId: id, username: players[id].username });
   });
 
-  socket.broadcast.emit('playerJoined', players[playerId]);
-
-  // Handle username setting from client
-  socket.on('setUsername', (newUsername) => {
-    if (typeof newUsername === 'string') {
-      let cleanUsername = newUsername.trim().substring(0, 20);
-      cleanUsername = cleanUsername.replace(/[^a-zA-Z0-9_]/g, '');
-      if (cleanUsername.length === 0) cleanUsername = `Guest${Math.floor(Math.random() * 9999)}`;
-      if (cleanUsername.length > 0 && players[playerId]) {
-        const oldUsername = players[playerId].username;
-        players[playerId].username = cleanUsername;
-        console.log(`✏️ Username changed: ${oldUsername} → ${cleanUsername}`);
-        io.emit('playerUsernameUpdated', {
-          playerId: playerId,
-          username: cleanUsername
-        });
-      }
+  socket.on("equipWeapon", (weapon) => {
+    if (WEAPONS[weapon] && players[id]) {
+      players[id].weapon = weapon;
+      io.emit("playerWeaponUpdate", { playerId: id, weapon });
     }
   });
 
-  socket.on('move', (data) => {
-    if (players[playerId]) {
-      players[playerId].position = data.position;
-      players[playerId].rotation = data.rotation;
-      socket.broadcast.emit('playerMoved', {
-        playerId: playerId,
-        position: data.position,
-        rotation: data.rotation
-      });
-    }
+  socket.on("equipCosmetics", ({ skin, trail }) => {
+    if (!players[id]) return;
+    if (SKINS.includes(skin)) players[id].skin = skin;
+    if (TRAILS.includes(trail)) players[id].trail = trail;
+    io.emit("playerCosmeticsUpdate", { playerId: id, skin, trail });
   });
 
-  socket.on('shoot', (data) => {
-    socket.broadcast.emit('playerShot', {
-      playerId: playerId,
+  socket.on("move", (data) => {
+    if (!players[id]) return;
+    players[id].position = data.position;
+    players[id].rotation = data.rotation;
+    socket.broadcast.emit("playerMoved", { playerId: id, ...data });
+  });
+
+  socket.on("shoot", (data) => {
+    lastShot[id] = Date.now();
+    socket.broadcast.emit("playerShot", {
+      playerId: id,
       from: data.from,
-      direction: data.direction
+      direction: data.direction,
+      trail: players[id].trail,
+      weapon: players[id].weapon
     });
   });
 
-  // Hit & Death logic with full protection during death cam
-  socket.on('hit', (data) => {
-    const target = players[data.targetId];
-    const attacker = players[playerId];
-
-    if (!target || !attacker) return;
-
-    // Ignore hits if target is dead (in death cam) or immune
+  socket.on("hit", ({ targetId }) => {
+    const attacker = players[id];
+    const target = players[targetId];
+    if (!attacker || !target) return;
     if (target.isDead || target.isImmune) return;
 
-    target.health -= 25;
+    const now = Date.now();
+    if (lastHitTime[id] && now - lastHitTime[id] < 150) return;
+    if (!lastShot[id] || now - lastShot[id] > 200) return;
+    lastHitTime[id] = now;
+
+    const weapon = WEAPONS[attacker.weapon];
+    target.health -= weapon.damage;
     attacker.score += 10;
 
     if (target.health <= 0) {
-      target.health = 100;
-      attacker.score += 50;
-
-      // Mark as dead and hide immediately
+      target.health = 0;
       target.isDead = true;
       target.visible = false;
 
-      io.emit('playerVisibilityUpdate', {
-        playerId: data.targetId,
-        visible: false
-      });
+      io.emit("playerVisibilityUpdate", { playerId: targetId, visible: false });
+      io.emit("playerDied", { targetId, killerId: id });
 
-      io.emit('playerDied', {
-        targetId: data.targetId,
-        killerId: playerId
-      });
-
-      // Respawn after 3 seconds
       setTimeout(() => {
-        if (players[data.targetId]) {
-          const respawnedPlayer = players[data.targetId];
+        if (!players[targetId]) return;
+        Object.assign(players[targetId], {
+          health: 100,
+          isDead: false,
+          isImmune: true,
+          visible: true,
+          position: { x: 0, y: 1.6, z: 15 }
+        });
 
-          // Teleport to spawn point
-          respawnedPlayer.position = { x: 0, y: 1.6, z: 15 };
+        io.emit("playerMoved", {
+          playerId: targetId,
+          position: players[targetId].position,
+          rotation: players[targetId].rotation
+        });
 
-          // Clear dead state
-          respawnedPlayer.isDead = false;
+        io.emit("playerVisibilityUpdate", { playerId: targetId, visible: true });
+        io.emit("playerHit", { targetId, health: 100 });
 
-          // Make visible again
-          respawnedPlayer.visible = true;
-
-          // Grant 3-second immunity on respawn
-          respawnedPlayer.isImmune = true;
-
-          // Broadcast updates
-          io.emit('playerMoved', {
-            playerId: data.targetId,
-            position: respawnedPlayer.position,
-            rotation: respawnedPlayer.rotation
-          });
-
-          io.emit('playerVisibilityUpdate', {
-            playerId: data.targetId,
-            visible: true
-          });
-
-          io.emit('playerHit', {
-            targetId: data.targetId,
-            health: 100
-          });
-
-          console.log(`Player ${respawnedPlayer.username} respawned with 3s immunity`);
-
-          // End immunity after 3 seconds
-          setTimeout(() => {
-            if (players[data.targetId]) {
-              players[data.targetId].isImmune = false;
-            }
-          }, 3000);
-        }
-      }, 3000); // Death cam duration
+        setTimeout(() => {
+          if (players[targetId]) players[targetId].isImmune = false;
+        }, 3000);
+      }, 3000);
     }
 
-    // Send normal hit/score updates
-    io.emit('playerHit', {
-      targetId: data.targetId,
-      health: target.health
-    });
-
-    io.emit('scoreUpdate', {
-      playerId: playerId,
-      score: attacker.score
-    });
+    io.emit("playerHit", { targetId, health: target.health });
+    io.emit("scoreUpdate", { playerId: id, score: attacker.score });
   });
 
-  socket.on('chatMessage', (data) => {
-    if (players[playerId] && data.message) {
-      const message = data.message.substring(0, 100);
-      io.emit('chatMessage', {
-        username: players[playerId].username,
-        message: message
-      });
-      console.log(`💬 Chat from ${players[playerId].username}: ${message}`);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    console.log('❌ Disconnected:', players[playerId]?.username || playerId);
+  socket.on("disconnect", () => {
+    delete players[id];
     playerCount--;
-    io.emit('playerCount', playerCount);
-    delete players[playerId];
-    io.emit('playerLeft', playerId);
+    io.emit("playerLeft", id);
+    io.emit("playerCount", playerCount);
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌐 Visit: http://localhost:${PORT}`);
-});
+server.listen(PORT, () =>
+  console.log(`🚀 Shotstrike server running on port ${PORT}`)
+);
