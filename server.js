@@ -1,4 +1,4 @@
-// server.js (with damage system)
+// server.js (with proper health initialization)
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
@@ -22,7 +22,7 @@ const WEAPONS = {
     shotgun: { damage: 50, range: 30 }
 };
 
-// Add initial player state
+// Create complete player object with all properties
 const createPlayer = (id, spawn) => ({
     id: id,
     position: spawn,
@@ -31,7 +31,20 @@ const createPlayer = (id, spawn) => ({
     health: 100,
     maxHealth: 100,
     equipped: { weapon: 'pistol' },
-    username: `Player_${id.substr(0, 4)}`
+    username: `Player_${id.substr(0, 4)}`,
+    isDead: false
+});
+
+// Send player data to clients (without exposing everything)
+const getPlayerForClient = (player) => ({
+    id: player.id,
+    position: player.position,
+    rotation: player.rotation,
+    color: player.color,
+    health: player.health,
+    maxHealth: player.maxHealth,
+    equipped: player.equipped,
+    username: player.username
 });
 
 // Simple status page
@@ -70,14 +83,25 @@ io.on('connection', (socket) => {
     // Create player with full health
     players[socket.id] = createPlayer(socket.id, spawn);
     
-    // Send initial data
-    socket.emit('init', {
-        playerId: socket.id,
-        players: players
+    // Format existing players for client
+    const existingPlayers = {};
+    Object.keys(players).forEach(id => {
+        if (id !== socket.id) { // Don't send self data (will be handled by init)
+            existingPlayers[id] = getPlayerForClient(players[id]);
+        }
     });
     
-    // Broadcast to others
-    socket.broadcast.emit('playerJoined', players[socket.id]);
+    // Send initial data to the connecting player
+    socket.emit('init', {
+        playerId: socket.id,
+        spawn: spawn,
+        health: 100,
+        maxHealth: 100,
+        players: existingPlayers
+    });
+    
+    // Broadcast new player to others with full health info
+    socket.broadcast.emit('playerJoined', getPlayerForClient(players[socket.id]));
     
     // Handle player data
     socket.on('playerData', (data) => {
@@ -90,14 +114,16 @@ io.on('connection', (socket) => {
                 playerId: socket.id,
                 username: data.username,
                 equipped: data.equipped,
-                color: data.color
+                color: data.color,
+                health: players[socket.id].health,
+                maxHealth: players[socket.id].maxHealth
             });
         }
     });
     
     // Handle movement
     socket.on('move', (data) => {
-        if (players[socket.id]) {
+        if (players[socket.id] && !players[socket.id].isDead) {
             players[socket.id].position = data.position;
             players[socket.id].rotation = data.rotation;
             
@@ -111,12 +137,14 @@ io.on('connection', (socket) => {
     
     // Handle shooting
     socket.on('shoot', (data) => {
-        socket.broadcast.emit('playerShot', {
-            playerId: socket.id,
-            from: data.from,
-            direction: data.direction,
-            weapon: data.weapon || 'pistol'
-        });
+        if (players[socket.id] && !players[socket.id].isDead) {
+            socket.broadcast.emit('playerShot', {
+                playerId: socket.id,
+                from: data.from,
+                direction: data.direction,
+                weapon: data.weapon || 'pistol'
+            });
+        }
     });
     
     // Handle hits with server-side validation
@@ -124,7 +152,7 @@ io.on('connection', (socket) => {
         const shooter = players[socket.id];
         const target = players[data.targetId];
         
-        if (!shooter || !target) return;
+        if (!shooter || !target || shooter.isDead || target.isDead) return;
         
         // Calculate distance between shooter and target
         const dx = shooter.position.x - target.position.x;
@@ -143,30 +171,59 @@ io.on('connection', (socket) => {
         }
         
         // Apply damage
+        const oldHealth = target.health;
         target.health -= weaponData.damage;
+        target.health = Math.max(0, target.health); // Don't go below 0
         
-        // Broadcast hit to all players (for hit markers)
+        console.log(`${shooter.username} hit ${target.username} for ${weaponData.damage} damage. Health: ${oldHealth} -> ${target.health}`);
+        
+        // Broadcast hit to all players (for hit markers and health updates)
         io.emit('playerHit', {
             shooterId: socket.id,
             targetId: data.targetId,
             damage: weaponData.damage,
-            newHealth: target.health
+            newHealth: target.health,
+            maxHealth: target.maxHealth
+        });
+        
+        // Also send specific health update to target
+        io.to(data.targetId).emit('healthUpdate', {
+            health: target.health,
+            maxHealth: target.maxHealth
         });
         
         // Check if player died
         if (target.health <= 0) {
+            target.isDead = true;
             target.health = 0;
+            
+            // Notify everyone about the kill
+            io.emit('playerKilled', {
+                killerId: socket.id,
+                victimId: data.targetId,
+                weapon: weapon
+            });
             
             // Respawn player after delay
             setTimeout(() => {
                 if (players[data.targetId]) {
-                    players[data.targetId].health = target.maxHealth;
-                    players[data.targetId].position = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+                    const newSpawn = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+                    players[data.targetId].health = 100;
+                    players[data.targetId].maxHealth = 100;
+                    players[data.targetId].position = newSpawn;
+                    players[data.targetId].isDead = false;
                     
                     io.emit('playerRespawned', {
                         playerId: data.targetId,
-                        position: players[data.targetId].position,
-                        health: players[data.targetId].health
+                        position: newSpawn,
+                        health: 100,
+                        maxHealth: 100
+                    });
+                    
+                    // Also send to the respawned player
+                    io.to(data.targetId).emit('healthUpdate', {
+                        health: 100,
+                        maxHealth: 100
                     });
                 }
             }, 3000);
@@ -177,10 +234,18 @@ io.on('connection', (socket) => {
     socket.on('heal', (amount) => {
         if (players[socket.id]) {
             const player = players[socket.id];
-            player.health = Math.min(player.maxHealth, player.health + amount);
+            player.health = Math.min(player.maxHealth, player.health + (amount || 25));
             
             socket.emit('healthUpdate', {
-                health: player.health
+                health: player.health,
+                maxHealth: player.maxHealth
+            });
+            
+            // Broadcast to others
+            socket.broadcast.emit('playerHealthUpdate', {
+                playerId: socket.id,
+                health: player.health,
+                maxHealth: player.maxHealth
             });
         }
     });
@@ -188,6 +253,7 @@ io.on('connection', (socket) => {
     // Handle chat
     socket.on('chatMessage', (data) => {
         io.emit('chatMessage', {
+            playerId: socket.id,
             username: players[socket.id]?.username || 'Player',
             message: data.message
         });
