@@ -1,14 +1,16 @@
-// server.js
 const express = require('express');
 const http = require('http');
 const socketIo = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
+
+// Fix CORS for Render deployment
 const io = socketIo(server, {
     cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
+        origin: "*", // Allow all origins
+        methods: ["GET", "POST"],
+        credentials: true
     }
 });
 
@@ -16,7 +18,7 @@ const io = socketIo(server, {
 const players = {};
 const PORT = process.env.PORT || 3000;
 
-// Username generator (matching client)
+// Username generator
 const adjectives = ["Quick", "Silent", "Brave", "Fierce", "Clever", "Bold", "Swift", "Mighty", "Sharp", "Wild", "Cool", "Epic", "Lone", "Dark", "Bright", "Steel", "Iron", "Shadow", "Blaze", "Storm"];
 const nouns = ["Wolf", "Eagle", "Tiger", "Shark", "Fox", "Hawk", "Bear", "Lion", "Panther", "Dragon", "Phoenix", "Viper", "Raven", "Ghost", "Knight", "Ninja", "Sniper", "Hunter", "Warrior", "Striker"];
 
@@ -27,7 +29,7 @@ function generateUsername() {
     return `${adj}${noun}${num}`;
 }
 
-// Shop items (matching client)
+// Shop items
 const shopItems = {
     skins: [
         { id: 'default', name: 'Default', color: 0x3b82f6, price: 0 },
@@ -54,6 +56,15 @@ const shopItems = {
         { id: 'purple', name: 'Mystic', color: 0x9333ea, price: 300 }
     ]
 };
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: 'healthy',
+        players: Object.keys(players).length,
+        uptime: process.uptime()
+    });
+});
 
 // Serve a simple status page at root
 app.get('/', (req, res) => {
@@ -107,6 +118,7 @@ app.get('/', (req, res) => {
                 <div class="players">👥 Players online: ${Object.keys(players).length}</div>
                 <div class="info">Connect using the Shotstrike game client</div>
                 <div class="info">Port: ${PORT}</div>
+                <div class="info">Health: <a href="/health" style="color: #60a5fa;">/health</a></div>
             </div>
         </body>
         </html>
@@ -118,7 +130,8 @@ app.get('/status', (req, res) => {
     res.json({
         status: 'online',
         players: Object.keys(players).length,
-        uptime: process.uptime()
+        uptime: process.uptime(),
+        timestamp: Date.now()
     });
 });
 
@@ -153,12 +166,14 @@ io.on('connection', (socket) => {
             weapon: 'default',
             trail: 'none'
         },
-        coins: 0, // Simulated coin balance
+        coins: 100,
         ownedItems: {
             skins: ['default'],
             weapons: ['default'],
             trails: ['none']
-        }
+        },
+        lastHitTime: 0,
+        hitCooldown: 2000
     };
     
     // Send initial game data to the player
@@ -167,6 +182,9 @@ io.on('connection', (socket) => {
         players: players,
         username: username
     });
+    
+    // Send initial coins
+    socket.emit('coinsUpdate', { coins: players[socket.id].coins });
     
     // Notify other players about the new player
     socket.broadcast.emit('playerJoined', players[socket.id]);
@@ -214,6 +232,8 @@ io.on('connection', (socket) => {
     
     // Handle shooting
     socket.on('shoot', (data) => {
+        if (!players[socket.id]) return;
+        
         // Broadcast shot to all other players
         socket.broadcast.emit('playerShot', {
             playerId: socket.id,
@@ -227,79 +247,96 @@ io.on('connection', (socket) => {
     socket.on('hit', (data) => {
         const targetPlayer = players[data.targetId];
         const shooter = players[socket.id];
+        const currentTime = Date.now();
         
-        if (targetPlayer && shooter && targetPlayer.id !== socket.id) {
-            // Apply damage (adjust based on equipped weapon)
-            const weapon = shopItems.weapons.find(w => w.id === shooter.equipped.weapon) || shopItems.weapons[0];
-            targetPlayer.health -= weapon.damage;
+        if (!targetPlayer || !shooter || targetPlayer.id === socket.id) return;
+        
+        // Apply damage based on equipped weapon
+        const weapon = shopItems.weapons.find(w => w.id === shooter.equipped.weapon) || shopItems.weapons[0];
+        targetPlayer.health -= weapon.damage;
+        
+        // Update the hit player
+        io.to(data.targetId).emit('playerHit', {
+            health: targetPlayer.health,
+            shooterId: socket.id,
+            damage: weapon.damage
+        });
+        
+        // Award coins for successful hit
+        shooter.coins += 1;
+        shooter.lastHitTime = currentTime;
+        
+        // Notify shooter about coins
+        socket.emit('coinsUpdate', { 
+            coins: shooter.coins,
+            message: '+1 coin for hitting enemy!'
+        });
+        
+        // Check if player died
+        if (targetPlayer.health <= 0) {
+            targetPlayer.health = 0;
+            targetPlayer.deaths += 1;
             
-            // Update the hit player
-            io.to(data.targetId).emit('playerHit', {
-                health: targetPlayer.health,
-                shooterId: socket.id,
-                damage: weapon.damage
+            // Award points and bonus coins for elimination
+            shooter.score += 100;
+            shooter.kills += 1;
+            shooter.coins += 10;
+            
+            // Notify both players
+            io.to(socket.id).emit('scoreUpdate', {
+                playerId: socket.id,
+                score: shooter.score,
+                kills: shooter.kills
             });
             
-            // Award coins for hit
-            shooter.coins += 1;
-            socket.emit('coinsUpdate', { coins: shooter.coins });
+            io.to(socket.id).emit('coinsUpdate', { 
+                coins: shooter.coins,
+                message: '+10 coins for elimination!'
+            });
             
-            // Check if player died
-            if (targetPlayer.health <= 0) {
-                targetPlayer.health = 0;
-                targetPlayer.deaths += 1;
-                
-                // Award points and coins to shooter
-                shooter.score += 100;
-                shooter.kills += 1;
-                shooter.coins += 5;
-                
-                // Notify both players
-                io.to(socket.id).emit('scoreUpdate', {
-                    playerId: socket.id,
-                    score: shooter.score,
-                    kills: shooter.kills
-                });
-                
-                io.to(socket.id).emit('coinsUpdate', { coins: shooter.coins });
-                
-                io.to(data.targetId).emit('playerDied', {
-                    killerId: socket.id,
-                    targetId: data.targetId
-                });
-                
-                // Broadcast death to all players
-                io.emit('chatMessage', {
-                    username: 'System',
-                    message: `${shooter.username} eliminated ${targetPlayer.username}!`
-                });
-                
-                // Respawn the dead player after 3 seconds
-                setTimeout(() => {
-                    if (players[data.targetId]) {
-                        players[data.targetId].health = 100;
-                        const spawn = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
-                        players[data.targetId].position = spawn;
-                        
-                        io.to(data.targetId).emit('respawn', {
-                            position: spawn,
-                            health: 100
-                        });
-                        
-                        io.emit('chatMessage', {
-                            username: 'System',
-                            message: `${targetPlayer.username} respawned`
-                        });
-                    }
-                }, 3000);
-            } else {
-                // Award some points for hit
-                shooter.score += 10;
-                io.to(socket.id).emit('scoreUpdate', {
-                    playerId: socket.id,
-                    score: shooter.score
-                });
-            }
+            io.to(data.targetId).emit('playerDied', {
+                killerId: socket.id,
+                targetId: data.targetId
+            });
+            
+            // Broadcast death to all players
+            io.emit('chatMessage', {
+                username: 'System',
+                message: `${shooter.username} eliminated ${targetPlayer.username}! (+10 coins)`
+            });
+            
+            // Respawn the dead player after 3 seconds
+            setTimeout(() => {
+                if (players[data.targetId]) {
+                    players[data.targetId].health = 100;
+                    const spawn = spawnPoints[Math.floor(Math.random() * spawnPoints.length)];
+                    players[data.targetId].position = spawn;
+                    
+                    io.to(data.targetId).emit('respawn', {
+                        position: spawn,
+                        health: 100
+                    });
+                    
+                    io.emit('chatMessage', {
+                        username: 'System',
+                        message: `${targetPlayer.username} respawned`
+                    });
+                }
+            }, 3000);
+        } else {
+            // Award some points for hit
+            shooter.score += 10;
+            io.to(socket.id).emit('scoreUpdate', {
+                playerId: socket.id,
+                score: shooter.score
+            });
+            
+            // Send hit notification to shooter
+            socket.emit('hitNotification', {
+                damage: weapon.damage,
+                targetHealth: targetPlayer.health,
+                coinsEarned: 1
+            });
         }
     });
     
@@ -308,7 +345,7 @@ io.on('connection', (socket) => {
         if (data.message && data.message.trim() !== '') {
             // Broadcast message to all players
             io.emit('chatMessage', {
-                username: players[socket.id].username,
+                username: players[socket.id]?.username || 'Unknown',
                 message: data.message.trim(),
                 playerId: socket.id
             });
@@ -358,10 +395,15 @@ io.on('connection', (socket) => {
             category: category,
             itemId: itemId,
             coins: player.coins,
-            ownedItems: player.ownedItems
+            ownedItems: player.ownedItems,
+            success: true,
+            message: `Purchased ${item.name} for ${item.price} coins!`
         });
         
-        socket.emit('coinsUpdate', { coins: player.coins });
+        socket.emit('coinsUpdate', { 
+            coins: player.coins,
+            message: `-${item.price} coins for ${item.name}`
+        });
     });
     
     // Handle item equipping
@@ -398,7 +440,9 @@ io.on('connection', (socket) => {
         socket.emit('itemEquipped', {
             category: category,
             itemId: itemId,
-            equipped: player.equipped
+            equipped: player.equipped,
+            success: true,
+            message: `Equipped ${itemId} ${category}`
         });
         
         // If it's a weapon, notify about stats change
@@ -408,18 +452,22 @@ io.on('connection', (socket) => {
                 socket.emit('weaponChanged', {
                     damage: weapon.damage,
                     fireRate: weapon.fireRate,
-                    ammo: weapon.ammo
+                    ammo: weapon.ammo,
+                    name: weapon.name
                 });
             }
         }
     });
     
-    // Handle coin awards (for singleplayer actions)
+    // Handle coin awards from singleplayer
     socket.on('addCoins', (data) => {
         const player = players[socket.id];
-        if (player && data.amount) {
+        if (player && data.amount && data.amount > 0) {
             player.coins += data.amount;
-            socket.emit('coinsUpdate', { coins: player.coins });
+            socket.emit('coinsUpdate', { 
+                coins: player.coins,
+                message: `+${data.amount} coins from game!`
+            });
         }
     });
     
@@ -435,6 +483,17 @@ io.on('connection', (socket) => {
                 coins: player.coins,
                 equipped: player.equipped,
                 ownedItems: player.ownedItems
+            });
+        }
+    });
+    
+    // Handle coin balance request
+    socket.on('getCoins', () => {
+        const player = players[socket.id];
+        if (player) {
+            socket.emit('coinsUpdate', { 
+                coins: player.coins,
+                message: 'Current balance'
             });
         }
     });
@@ -461,7 +520,7 @@ io.on('connection', (socket) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-    console.error(err.stack);
+    console.error('Server error:', err.stack);
     res.status(500).send('Server error!');
 });
 
@@ -485,5 +544,23 @@ app.use((req, res) => {
 server.listen(PORT, () => {
     console.log(`🎮 Shotstrike server running on port ${PORT}`);
     console.log(`🌐 Status page: http://localhost:${PORT}`);
-    console.log(`📊 API status: http://localhost:${PORT}/status`);
+    console.log(`📊 Health check: http://localhost:${PORT}/health`);
+    console.log(`📈 Status API: http://localhost:${PORT}/status`);
+});
+
+// Handle graceful shutdown
+process.on('SIGINT', () => {
+    console.log('Shutting down server gracefully...');
+    server.close(() => {
+        console.log('Server closed');
+        process.exit(0);
+    });
+});
+
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled rejection at:', promise, 'reason:', reason);
 });
