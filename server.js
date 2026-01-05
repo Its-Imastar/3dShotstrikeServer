@@ -1,4 +1,3 @@
-// server.js
 const express = require('express');
 const app = express();
 const http = require('http');
@@ -6,7 +5,7 @@ const server = http.createServer(app);
 const { Server } = require('socket.io');
 const io = new Server(server, {
   cors: {
-    origin: '*', // Allow any origin (fine for a public game)
+    origin: '*',
   },
 });
 
@@ -16,8 +15,6 @@ app.get('/', (req, res) => {
 
 const players = {};
 
-// Fixed starting position to match your client's default spawn
-// (camera starts at y = 1.67, but you send y - 0.67 in moves, so we store the sent format)
 const DEFAULT_SPAWN = { x: 0, y: 1.0, z: 15 };
 const DEFAULT_ROTATION_Y = Math.PI;
 
@@ -38,7 +35,6 @@ function getBroadcastData(playerId) {
 io.on('connection', (socket) => {
   console.log('Player connected:', socket.id);
 
-  // Create new player with defaults
   players[socket.id] = {
     position: { ...DEFAULT_SPAWN },
     rotationY: DEFAULT_ROTATION_Y,
@@ -50,7 +46,6 @@ io.on('connection', (socket) => {
     trailColor: 0xffff00,
   };
 
-  // Send existing players to the new player (others only)
   const others = {};
   Object.keys(players).forEach((id) => {
     if (id !== socket.id) {
@@ -63,13 +58,10 @@ io.on('connection', (socket) => {
     players: others,
   });
 
-  // Tell everyone about the new player (with default cosmetics/position)
   io.emit('playerJoined', getBroadcastData(socket.id));
 
-  // System join message
   io.emit('chatMessage', { username: 'System', message: 'A player joined the game.' });
 
-  // === Event handlers ===
   socket.on('setCosmetics', (data) => {
     if (players[socket.id]) {
       players[socket.id].username = data.username || 'Player';
@@ -114,30 +106,20 @@ io.on('connection', (socket) => {
     const shooter = players[socket.id];
 
     if (target && shooter && data.targetId !== socket.id) {
-      target.health -= 25; // Same damage as your bot mode
+      target.health -= 25;
 
-      // Score for hit
       shooter.score += 10;
       io.to(socket.id).emit('scoreUpdate', { playerId: socket.id, score: shooter.score });
 
-      // Update target health
       io.to(data.targetId).emit('playerHit', { health: target.health });
 
       if (target.health <= 0) {
-        // Respawn target
         target.health = 100;
 
-        // Kill bonus
         shooter.score += 40;
         io.to(socket.id).emit('scoreUpdate', { playerId: socket.id, score: shooter.score });
 
-        // Broadcast death (for death cam on client)
         io.emit('playerDied', { targetId: data.targetId, killerId: socket.id });
-
-        // Optional: force respawn position via server (uncomment if you want server-controlled respawns)
-        // target.position = { ...DEFAULT_SPAWN };
-        // target.rotationY = DEFAULT_ROTATION_Y;
-        // io.emit('playerMoved', { playerId: data.targetId, position: target.position, rotation: { y: target.rotationY } });
       }
     }
   });
