@@ -129,15 +129,34 @@ io.on('connection', (socket) => {
       shooter.score += 10;
       io.to(socket.id).emit('scoreUpdate', { playerId: socket.id, score: shooter.score });
 
-      io.to(data.targetId).emit('playerHit', { health: target.health });
+      // FIXED: Include targetId and killerId in the playerHit event
+      io.to(data.targetId).emit('playerHit', { 
+        targetId: data.targetId,      // Added
+        killerId: socket.id,          // Added
+        health: target.health 
+      });
 
       if (target.health <= 0) {
+        // Reset health and position
         target.health = 100;
+        target.position = { ...DEFAULT_SPAWN };
+        target.rotationY = DEFAULT_ROTATION_Y;
 
         shooter.score += 40;
         io.to(socket.id).emit('scoreUpdate', { playerId: socket.id, score: shooter.score });
 
-        io.emit('playerDied', { targetId: data.targetId, killerId: socket.id });
+        // Broadcast death
+        io.emit('playerDied', { 
+          targetId: data.targetId, 
+          killerId: socket.id 
+        });
+        
+        // Broadcast respawn position to everyone
+        socket.broadcast.emit('playerMoved', {
+          playerId: data.targetId,
+          position: target.position,
+          rotation: { y: target.rotationY },
+        });
       }
     }
   });
