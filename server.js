@@ -80,20 +80,47 @@ io.on('connection', (socket) => {
   io.emit('chatMessage', { username: 'System', message: 'A player joined the game.' });
 
   socket.on('setCosmetics', (data) => {
+    console.log('🎨 [SERVER] Received setCosmetics from player:', socket.id);
+    console.log('  📦 Raw data received:', JSON.stringify(data));
+    console.log('  🎯 Skin color received:', data.skinColor, 'Type:', typeof data.skinColor, 'Hex:', data.skinColor ? '0x' + data.skinColor.toString(16).toUpperCase() : 'undefined/0');
+    console.log('  🎩 Hat color received:', data.hatColor, 'Type:', typeof data.hatColor, 'Hex:', data.hatColor ? '0x' + data.hatColor.toString(16).toUpperCase() : 'undefined/0');
+    console.log('  ✨ Trail color received:', data.trailColor, 'Type:', typeof data.trailColor, 'Hex:', data.trailColor ? '0x' + data.trailColor.toString(16).toUpperCase() : 'undefined/0');
+    console.log('  👤 Username received:', data.username);
+    
     if (players[socket.id]) {
-      players[socket.id].username = data.username || 'Player';
-      players[socket.id].skinColor = data.skinColor || 0x3b82f6;
-      players[socket.id].hatColor = data.hatColor || 0xffffff;
-      players[socket.id].trailColor = data.trailColor || 0xffff00;
+        console.log('  📊 Previous player cosmetics:');
+        console.log('    🎯 Skin:', players[socket.id].skinColor, 'Hex: 0x' + players[socket.id].skinColor.toString(16).toUpperCase());
+        console.log('    🎩 Hat:', players[socket.id].hatColor, 'Hex: 0x' + players[socket.id].hatColor.toString(16).toUpperCase());
+        console.log('    ✨ Trail:', players[socket.id].trailColor, 'Hex: 0x' + players[socket.id].trailColor.toString(16).toUpperCase());
+        console.log('    👤 Username:', players[socket.id].username);
+        
+        // FIX: Check for undefined/null specifically, not falsy (0 is a valid color!)
+        players[socket.id].username = data.username !== undefined ? data.username : 'Player';
+        players[socket.id].skinColor = data.skinColor !== undefined ? data.skinColor : 0x3b82f6;
+        players[socket.id].hatColor = data.hatColor !== undefined ? data.hatColor : 0xffffff;
+        players[socket.id].trailColor = data.trailColor !== undefined ? data.trailColor : 0xffff00;
+        
+        console.log('  📈 New player cosmetics:');
+        console.log('    🎯 Skin:', players[socket.id].skinColor, 'Hex: 0x' + players[socket.id].skinColor.toString(16).toUpperCase());
+        console.log('    🎩 Hat:', players[socket.id].hatColor, 'Hex: 0x' + players[socket.id].hatColor.toString(16).toUpperCase());
+        console.log('    ✨ Trail:', players[socket.id].trailColor, 'Hex: 0x' + players[socket.id].trailColor.toString(16).toUpperCase());
+        console.log('    👤 Username:', players[socket.id].username);
 
-      // Broadcast updated cosmetics to everyone
-      io.emit('playerCosmeticsUpdated', {
-        playerId: socket.id,
-        username: players[socket.id].username,
-        skinColor: players[socket.id].skinColor,
-        hatColor: players[socket.id].hatColor,
-        trailColor: players[socket.id].trailColor,
-      });
+        // Broadcast updated cosmetics to everyone
+        const broadcastData = {
+            playerId: socket.id,
+            username: players[socket.id].username,
+            skinColor: players[socket.id].skinColor,
+            hatColor: players[socket.id].hatColor,
+            trailColor: players[socket.id].trailColor,
+        };
+        
+        console.log('  📤 Broadcasting cosmetics to all players:', JSON.stringify(broadcastData));
+        io.emit('playerCosmeticsUpdated', broadcastData);
+        
+        console.log('  ✅ Successfully updated and broadcasted cosmetics for player:', socket.id);
+    } else {
+        console.log('  ❌ Player not found for socket ID:', socket.id);
     }
   });
 
@@ -111,6 +138,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('shoot', (data) => {
+    console.log('🔫 Player shot:', socket.id, 'Trail color:', players[socket.id].trailColor ? '0x' + players[socket.id].trailColor.toString(16).toUpperCase() : 'default');
     socket.broadcast.emit('playerShot', {
       playerId: socket.id,
       from: data.from,
@@ -120,10 +148,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('hit', (data) => {
+    console.log('💥 Hit event from:', socket.id, 'target:', data.targetId);
     const target = players[data.targetId];
     const shooter = players[socket.id];
 
     if (target && shooter && data.targetId !== socket.id) {
+      console.log('  Valid hit, reducing health from', target.health, 'to', target.health - 25);
       target.health -= 25;
 
       shooter.score += 10;
@@ -137,6 +167,7 @@ io.on('connection', (socket) => {
       });
 
       if (target.health <= 0) {
+        console.log('  💀 Player died:', data.targetId, 'killed by:', socket.id);
         // Reset health and position
         target.health = 100;
         target.position = { ...DEFAULT_SPAWN };
@@ -158,10 +189,13 @@ io.on('connection', (socket) => {
           rotation: { y: target.rotationY },
         });
       }
+    } else {
+      console.log('  ❌ Invalid hit - target or shooter not found, or self-hit');
     }
   });
 
   socket.on('chatMessage', (data) => {
+    console.log('💬 Chat message from:', socket.id, 'message:', data.message);
     if (players[socket.id] && data.message) {
       io.emit('chatMessage', {
         username: players[socket.id].username,
