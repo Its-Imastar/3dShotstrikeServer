@@ -35,6 +35,7 @@ function getBroadcastData(playerId) {
 io.on('connection', (socket) => {
   console.log('Player connected:', socket.id);
 
+  // Create new player
   players[socket.id] = {
     position: { ...DEFAULT_SPAWN },
     rotationY: DEFAULT_ROTATION_Y,
@@ -46,20 +47,36 @@ io.on('connection', (socket) => {
     trailColor: 0xffff00,
   };
 
+  // Send all existing players to the new client
   const others = {};
   Object.keys(players).forEach((id) => {
     if (id !== socket.id) {
       others[id] = getBroadcastData(id);
     }
   });
-
   socket.emit('init', {
     playerId: socket.id,
     players: others,
   });
 
-  io.emit('playerJoined', getBroadcastData(socket.id));
+  // Send the new player's data + cosmetics to ALL clients (including the new one)
+  const newPlayerData = getBroadcastData(socket.id);
+  io.emit('playerJoined', newPlayerData);
 
+  // Send cosmetics of ALL existing players to the new client
+  Object.keys(players).forEach((id) => {
+    if (id !== socket.id) {
+      socket.emit('playerCosmeticsUpdated', {
+        playerId: id,
+        username: players[id].username,
+        skinColor: players[id].skinColor,
+        hatColor: players[id].hatColor,
+        trailColor: players[id].trailColor,
+      });
+    }
+  });
+
+  // System message
   io.emit('chatMessage', { username: 'System', message: 'A player joined the game.' });
 
   socket.on('setCosmetics', (data) => {
@@ -69,6 +86,7 @@ io.on('connection', (socket) => {
       players[socket.id].hatColor = data.hatColor || 0xffffff;
       players[socket.id].trailColor = data.trailColor || 0xffff00;
 
+      // Broadcast updated cosmetics to everyone
       io.emit('playerCosmeticsUpdated', {
         playerId: socket.id,
         username: players[socket.id].username,
