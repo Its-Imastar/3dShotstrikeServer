@@ -1,17 +1,14 @@
+// package.json
 {
   "name": "shotstrike-server",
   "version": "1.0.0",
-  "description": "Multiplayer FPS game server",
+  "description": "Multiplayer server for Shotstrike game",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "socket.io": "^4.5.4"
-  },
-  "devDependencies": {
-    "nodemon": "^2.0.20"
+    "socket.io": "^4.7.5"
   }
 }
