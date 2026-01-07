@@ -1,268 +1,415 @@
-// server.js - Updated with HARD 8 CPS LIMIT
-// Shotstrike multiplayer server with authoritative health + regeneration + anti-autoclick
-
+// server.js - Updated with Shop System
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-
 const app = express();
-const server = http.createServer(app);
-
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
+const http = require('http').createServer(app);
+const io = require('socket.io')(http, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
 });
 
-// ====================== GAME CONSTANTS ======================
-const MAX_HEALTH = 100;
-const START_SCORE = 0;
-const DAMAGE_PER_HIT = 25;
-const KILL_SCORE = 50;
-const HEALTH_REGEN_DELAY = 4;
-const HEALTH_REGEN_RATE = 5;
-const REGEN_TICK_MS = 50;
-
-// HARD RATE LIMIT - 8 CPS MAX
-const MAX_SHOTS_PER_SECOND = 8;
-const RATE_LIMIT_WINDOW_MS = 1000;
-
-// ====================== PLAYER STATE ======================
+// Player data storage
 const players = {};
+const playerUpgrades = {}; // Store player upgrades
+const playerCoins = {}; // Store player coins
 
-function randomColor() {
-  const colors = [0x3498db, 0xe74c3c, 0x2ecc71, 0xf1c40f, 0x9b59b6, 0x1abc9c];
-  return colors[Math.floor(Math.random() * colors.length)];
-}
-
-function nowMs() {
-  return Date.now();
-}
-
-function nowSeconds() {
-  return Date.now() / 1000;
-}
-
-// ====================== CONNECTION HANDLER ======================
-io.on('connection', (socket) => {
-  console.log('Player connected:', socket.id);
-
-  players[socket.id] = {
-    id: socket.id,
-    username: 'Guest',
-    color: randomColor(),
-    position: { x: 0, y: 1.67, z: 0 },
-    rotation: { x: 0, y: 0 },
-    health: MAX_HEALTH,
-    score: START_SCORE,
-    lastDamageTime: nowSeconds(),
-    isDead: false,
-    // ANTI-AUTOCICK FIELDS
-    shotsFired: 0,
-    shotWindowStart: nowMs(),
-    lastShotTime: 0,
-    lastHitTime: 0,
-    lastHitTarget: null
-  };
-
-  socket.emit('init', {
-    playerId: socket.id,
-    players: players
-  });
-
-  socket.broadcast.emit('playerJoined', players[socket.id]);
-
-  // Username
-  socket.on('setUsername', (username) => {
-    if (!players[socket.id]) return;
-    players[socket.id].username = String(username || 'Player').slice(0, 24);
-    io.emit('playerUsernameUpdated', {
-      playerId: socket.id,
-      username: players[socket.id].username
-    });
-  });
-
-  // Movement
-  socket.on('move', (data) => {
-    const player = players[socket.id];
-    if (!player || !data?.position || !data?.rotation) return;
-
-    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
-    player.position = {
-      x: clamp(data.position.x, -95, 95),
-      y: data.position.y,
-      z: clamp(data.position.z, -95, 95)
-    };
-    player.rotation = { x: data.rotation.x, y: data.rotation.y };
-
-    socket.broadcast.emit('playerMoved', {
-      playerId: socket.id,
-      position: player.position,
-      rotation: player.rotation
-    });
-  });
-
-  // SHOOT HANDLER WITH HARD 8 CPS LIMIT
-  socket.on('shoot', (data) => {
-    const player = players[socket.id];
-    if (!player || !data?.from || !data?.direction) return;
-
-    const now = nowMs();
-
-    // Reset shot window every second
-    if (now - player.shotWindowStart >= RATE_LIMIT_WINDOW_MS) {
-      player.shotsFired = 0;
-      player.shotWindowStart = now;
-    }
-
-    // HARD LIMIT: 8 shots per second MAX
-    if (player.shotsFired >= MAX_SHOTS_PER_SECOND) {
-      console.log(`🚫 AUTOCICKER BLOCKED: ${player.username} (${socket.id.slice(0,8)}): ${player.shotsFired}/${MAX_SHOTS_PER_SECOND} shots/sec`);
-      return; // SILENTLY DROP - no tracer, no processing
-    }
-
-    // Also enforce minimum time between shots (125ms = 8/sec)
-    if (now - player.lastShotTime < 125) {
-      return;
-    }
-
-    player.shotsFired++;
-    player.lastShotTime = now;
-
-    // Legit shot - broadcast tracer
-    socket.broadcast.emit('playerShot', {
-      playerId: socket.id,
-      from: data.from,
-      direction: data.direction
-    });
-  });
-
-  // HIT HANDLER WITH SPAM PROTECTION
-  socket.on('hit', (data) => {
-    const shooter = players[socket.id];
-    const targetId = data?.targetId;
-    const target = players[targetId];
-    
-    if (!shooter || !target || target.isDead) return;
-
-    const now = nowMs();
-
-    // Prevent hit spam on same target (150ms cooldown)
-    if (shooter.lastHitTarget === targetId && now - shooter.lastHitTime < 150) {
-      return;
-    }
-
-    shooter.lastHitTime = now;
-    shooter.lastHitTarget = targetId;
-
-    // Apply damage
-    target.health = Math.max(0, target.health - DAMAGE_PER_HIT);
-    target.lastDamageTime = nowSeconds();
-
-    io.to(targetId).emit('playerHit', {
-      targetId: targetId,
-      health: target.health,
-      fromId: socket.id
-    });
-
-    if (target.health <= 0) {
-      shooter.score += KILL_SCORE;
-      target.isDead = true;
-      
-      io.emit('playerDied', {
-        killerId: socket.id,
-        targetId: targetId
-      });
-
-      io.to(socket.id).emit('scoreUpdate', {
-        playerId: socket.id,
-        score: shooter.score
-      });
-
-      // Respawn after 2s
-      setTimeout(() => {
-        if (players[targetId]) {
-          players[targetId].health = MAX_HEALTH;
-          players[targetId].isDead = false;
-          players[targetId].lastDamageTime = nowSeconds();
-          players[targetId].position = { x: 0, y: 1.67, z: 0 };
-          players[targetId].shotsFired = 0; // reset autoclick counter
-
-          io.emit('playerMoved', {
-            playerId: targetId,
-            position: players[targetId].position,
-            rotation: players[targetId].rotation
-          });
-          
-          io.to(targetId).emit('playerHealthUpdate', {
-            playerId: targetId,
-            health: MAX_HEALTH
-          });
+// Shop items configuration (matches client)
+const shopItems = {
+    blaster: [
+        {
+            id: 'blaster_damage',
+            name: 'Damage Upgrade',
+            maxLevel: 10,
+            basePrice: 50,
+            priceMultiplier: 1.5,
+            stats: { damage: { base: 25, increase: 5 } }
+        },
+        {
+            id: 'blaster_ammo',
+            name: 'Extended Magazine',
+            maxLevel: 10,
+            basePrice: 40,
+            priceMultiplier: 1.4,
+            stats: { maxAmmo: { base: 30, increase: 5 } }
+        },
+        {
+            id: 'blaster_reload',
+            name: 'Rapid Reload',
+            maxLevel: 10,
+            basePrice: 60,
+            priceMultiplier: 1.6,
+            stats: { reloadSpeed: { base: 3.0, decrease: 0.2 } }
         }
-      }, 2000);
+    ],
+    hp: [
+        {
+            id: 'hp_max',
+            name: 'Max HP Increase',
+            maxLevel: 10,
+            basePrice: 80,
+            priceMultiplier: 1.8,
+            stats: { maxHP: { base: 100, increase: 20 } }
+        },
+        {
+            id: 'hp_regen',
+            name: 'HP Regeneration',
+            maxLevel: 8,
+            basePrice: 70,
+            priceMultiplier: 1.7,
+            stats: { hpRegen: { base: 5, increase: 2 } }
+        },
+        {
+            id: 'hp_regen_delay',
+            name: 'Quick Recovery',
+            maxLevel: 5,
+            basePrice: 90,
+            priceMultiplier: 2.0,
+            stats: { hpRegenDelay: { base: 4, decrease: 0.5 } }
+        }
+    ],
+    abilities: [
+        {
+            id: 'ability_doublejump',
+            name: 'Double Jump',
+            maxLevel: 1,
+            basePrice: 500,
+            stats: {}
+        },
+        {
+            id: 'ability_sprint',
+            name: 'Sprint',
+            maxLevel: 1,
+            basePrice: 300,
+            stats: {}
+        }
+    ],
+    cosmetics: [
+        {
+            id: 'cosmetic_trail',
+            name: 'Bullet Trail',
+            maxLevel: 1,
+            basePrice: 100,
+            stats: {}
+        }
+    ]
+};
+
+// Calculate item price
+function calculateItemPrice(item, currentLevel) {
+    if (currentLevel >= item.maxLevel) return Infinity;
+    
+    if (item.priceMultiplier) {
+        return Math.floor(item.basePrice * Math.pow(item.priceMultiplier, currentLevel));
     }
-  });
+    return item.basePrice;
+}
 
-  // Chat
-  socket.on('chatMessage', (data) => {
-    const player = players[socket.id];
-    if (!player) return;
-    const message = data?.message || data;
-    if (typeof message !== 'string') return;
-
-    const cleanMsg = String(message).slice(0, 120);
-    io.emit('chatMessage', {
-      username: player.username || 'Player',
-      message: cleanMsg
+// Apply upgrade stats
+function applyUpgradeStats(playerId, item) {
+    const currentLevel = getUpgradeLevel(playerId, item.id);
+    
+    Object.entries(item.stats).forEach(([stat, data]) => {
+        if (data.increase) {
+            if (stat === 'damage') {
+                playerUpgrades[playerId].damage = data.base + (currentLevel * data.increase);
+            }
+            else if (stat === 'maxHP') {
+                playerUpgrades[playerId].maxHP = data.base + (currentLevel * data.increase);
+            }
+            else if (stat === 'hpRegen') {
+                playerUpgrades[playerId].hpRegen = data.base + (currentLevel * data.increase);
+            }
+            else if (stat === 'maxAmmo') {
+                playerUpgrades[playerId].maxAmmo = data.base + (currentLevel * data.increase);
+            }
+        } else if (data.decrease) {
+            if (stat === 'reloadSpeed') {
+                playerUpgrades[playerId].reloadSpeed = Math.max(0.5, data.base - (currentLevel * data.decrease));
+            }
+            else if (stat === 'hpRegenDelay') {
+                playerUpgrades[playerId].hpRegenDelay = Math.max(1, data.base - (currentLevel * data.decrease));
+            }
+        }
     });
-  });
+}
 
-  // Disconnect
-  socket.on('disconnect', () => {
-    console.log('Player disconnected:', socket.id);
-    if (players[socket.id]) {
-      io.emit('playerLeft', socket.id);
-      delete players[socket.id];
+function getUpgradeLevel(playerId, itemId) {
+    if (!playerUpgrades[playerId]) return 0;
+    if (!playerUpgrades[playerId][itemId]) return 0;
+    return playerUpgrades[playerId][itemId];
+}
+
+// Initialize player data
+function initializePlayerData(playerId) {
+    if (!playerUpgrades[playerId]) {
+        playerUpgrades[playerId] = {
+            blasterLevel: 1,
+            maxAmmo: 30,
+            reloadSpeed: 3.0,
+            damage: 25,
+            maxHP: 100,
+            hpRegen: 5,
+            hpRegenDelay: 4,
+            damageReduction: 0
+        };
     }
-  });
-});
+    
+    if (!playerCoins[playerId]) {
+        playerCoins[playerId] = 100; // Starting coins
+    }
+}
 
-// ====================== HEALTH REGENERATION ======================
-setInterval(() => {
-  const now = nowSeconds();
-  const deltaTime = REGEN_TICK_MS / 1000;
-
-  for (const playerId in players) {
-    const player = players[playerId];
-    if (!player || player.isDead || player.health >= MAX_HEALTH) continue;
-
-    const timeSinceDamage = now - player.lastDamageTime;
-    if (timeSinceDamage > HEALTH_REGEN_DELAY) {
-      const oldHealth = player.health;
-      player.health = Math.min(MAX_HEALTH, player.health + HEALTH_REGEN_RATE * deltaTime);
-      
-      if (Math.floor(player.health) !== Math.floor(oldHealth)) {
-        io.to(playerId).emit('playerHealthUpdate', {
-          playerId: playerId,
-          health: player.health
+io.on('connection', (socket) => {
+    console.log('Player connected:', socket.id);
+    
+    // Initialize player
+    players[socket.id] = {
+        id: socket.id,
+        username: 'Guest',
+        position: { x: 0, y: 1.67, z: 0 },
+        rotation: { x: 0, y: 0 },
+        color: Math.floor(Math.random() * 0xffffff),
+        health: 100,
+        score: 0
+    };
+    
+    // Initialize player upgrades and coins
+    initializePlayerData(socket.id);
+    
+    // Send existing players to new player
+    socket.emit('init', {
+        playerId: socket.id,
+        players: players
+    });
+    
+    // Send initial coins and upgrades
+    socket.emit('coinUpdate', {
+        playerId: socket.id,
+        coins: playerCoins[socket.id]
+    });
+    
+    // Notify other players
+    socket.broadcast.emit('playerJoined', players[socket.id]);
+    
+    // Handle username setting
+    socket.on('setUsername', (username) => {
+        players[socket.id].username = username;
+        socket.broadcast.emit('playerUsernameUpdated', {
+            playerId: socket.id,
+            username: username
         });
-      }
-    }
-  }
-}, REGEN_TICK_MS);
-
-// Health check
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    players: Object.keys(players).length,
-    activePlayers: Object.values(players).filter(p => !p.isDead).length
-  });
+    });
+    
+    // Handle player upgrades
+    socket.on('playerUpgrades', (upgrades) => {
+        playerUpgrades[socket.id] = {
+            ...playerUpgrades[socket.id],
+            ...upgrades
+        };
+    });
+    
+    // Handle shop purchases
+    socket.on('purchaseUpgrade', (data) => {
+        const { upgradeId, upgradeName, price } = data;
+        const playerId = socket.id;
+        
+        // Find the item
+        let item = null;
+        for (const [category, items] of Object.entries(shopItems)) {
+            const found = items.find(i => i.id === upgradeId);
+            if (found) {
+                item = found;
+                break;
+            }
+        }
+        
+        if (!item) {
+            socket.emit('upgradePurchased', {
+                success: false,
+                message: 'Item not found!'
+            });
+            return;
+        }
+        
+        // Check if player has enough coins
+        if (playerCoins[playerId] < price) {
+            socket.emit('upgradePurchased', {
+                success: false,
+                message: 'Not enough coins!'
+            });
+            return;
+        }
+        
+        // Check max level
+        const currentLevel = getUpgradeLevel(playerId, upgradeId);
+        if (currentLevel >= item.maxLevel) {
+            socket.emit('upgradePurchased', {
+                success: false,
+                message: 'Maximum level reached!'
+            });
+            return;
+        }
+        
+        // Deduct coins
+        playerCoins[playerId] -= price;
+        
+        // Update upgrade level
+        if (!playerUpgrades[playerId][upgradeId]) {
+            playerUpgrades[playerId][upgradeId] = 1;
+        } else {
+            playerUpgrades[playerId][upgradeId]++;
+        }
+        
+        // Apply stats
+        applyUpgradeStats(playerId, item);
+        
+        // Update blaster level if it's a blaster upgrade
+        if (upgradeId.startsWith('blaster_')) {
+            playerUpgrades[playerId].blasterLevel = Math.max(
+                playerUpgrades[playerId].blasterLevel || 1,
+                currentLevel + 1
+            );
+        }
+        
+        // Send success response
+        socket.emit('upgradePurchased', {
+            success: true,
+            upgradeId: upgradeId,
+            upgradeName: upgradeName,
+            newCoins: playerCoins[playerId]
+        });
+        
+        // Send coin update
+        socket.emit('coinUpdate', {
+            playerId: playerId,
+            coins: playerCoins[playerId]
+        });
+        
+        console.log(`Player ${playerId} purchased ${upgradeName} (Level ${currentLevel + 1})`);
+    });
+    
+    // Handle player movement
+    socket.on('move', (data) => {
+        if (players[socket.id]) {
+            players[socket.id].position = data.position;
+            players[socket.id].rotation = data.rotation;
+            socket.broadcast.emit('playerMoved', {
+                playerId: socket.id,
+                position: data.position,
+                rotation: data.rotation
+            });
+        }
+    });
+    
+    // Handle shooting
+    socket.on('shoot', (data) => {
+        socket.broadcast.emit('playerShot', {
+            playerId: socket.id,
+            from: data.from,
+            direction: data.direction
+        });
+    });
+    
+    // Handle hits
+    socket.on('hit', (data) => {
+        const targetId = data.targetId;
+        if (players[targetId] && players[socket.id]) {
+            // Get shooter's damage from upgrades
+            const shooterDamage = playerUpgrades[socket.id]?.damage || 25;
+            
+            // Apply damage reduction if target has it
+            const targetDamageReduction = playerUpgrades[targetId]?.damageReduction || 0;
+            const actualDamage = shooterDamage * (1 - targetDamageReduction / 100);
+            
+            players[targetId].health -= actualDamage;
+            
+            // Emit health update
+            io.to(targetId).emit('playerHealthUpdate', {
+                playerId: targetId,
+                health: players[targetId].health
+            });
+            
+            // Emit hit event for visual feedback
+            io.to(targetId).emit('playerHit', {
+                targetId: targetId,
+                health: players[targetId].health,
+                damage: actualDamage
+            });
+            
+            // Check if player died
+            if (players[targetId].health <= 0) {
+                // Respawn player
+                players[targetId].health = playerUpgrades[targetId]?.maxHP || 100;
+                players[targetId].position = { x: 0, y: 1.67, z: 0 };
+                players[targetId].rotation = { x: 0, y: 0 };
+                
+                // Update shooter's score and give coins
+                players[socket.id].score += 100;
+                playerCoins[socket.id] += 30; // Kill reward
+                
+                // Emit death event
+                io.emit('playerDied', {
+                    targetId: targetId,
+                    killerId: socket.id,
+                    killerScore: players[socket.id].score
+                });
+                
+                // Update shooter's score
+                io.to(socket.id).emit('scoreUpdate', {
+                    playerId: socket.id,
+                    score: players[socket.id].score
+                });
+                
+                // Update shooter's coins
+                io.to(socket.id).emit('coinUpdate', {
+                    playerId: socket.id,
+                    coins: playerCoins[socket.id]
+                });
+                
+                console.log(`Player ${targetId} was killed by ${socket.id}`);
+            }
+        }
+    });
+    
+    // Handle chat messages
+    socket.on('chatMessage', (data) => {
+        const message = data.message;
+        const username = players[socket.id]?.username || 'Guest';
+        io.emit('chatMessage', {
+            username: username,
+            message: message
+        });
+    });
+    
+    // Handle disconnect
+    socket.on('disconnect', () => {
+        console.log('Player disconnected:', socket.id);
+        
+        // Notify other players
+        io.emit('playerLeft', socket.id);
+        
+        // Clean up data
+        delete players[socket.id];
+        delete playerUpgrades[socket.id];
+        delete playerCoins[socket.id];
+    });
+    
+    // Periodic coin rewards for playing
+    setInterval(() => {
+        if (players[socket.id]) {
+            // Give 10 coins every minute for playing
+            playerCoins[socket.id] += 10;
+            socket.emit('coinUpdate', {
+                playerId: socket.id,
+                coins: playerCoins[socket.id]
+            });
+        }
+    }, 60000); // Every minute
 });
 
+// Start server
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`🚀 Shotstrike server (8 CPS LIMIT) on port ${PORT}`);
-  console.log(`📊 Health: http://localhost:${PORT}/health`);
+http.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
 });
