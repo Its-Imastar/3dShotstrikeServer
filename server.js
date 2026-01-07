@@ -1,218 +1,179 @@
+// server.js
+// Basic Shotstrike multiplayer server
+
 const express = require('express');
-const app = express();
 const http = require('http');
-const server = http.createServer(app);
 const { Server } = require('socket.io');
+
+const app = express();
+const server = http.createServer(app);
+
+// Allow your web page to connect (adjust origin if you host elsewhere)
 const io = new Server(server, {
   cors: {
     origin: '*',
+    methods: ['GET', 'POST'],
   },
 });
 
-app.get('/', (req, res) => {
-  res.send('Shotstrike multiplayer server is running!');
-});
+// In‑memory game state
+const players = {}; // key: socket.id -> { id, username, color, position, rotation, health, score }
+const START_HEALTH = 100;
+const START_SCORE = 0;
 
-const players = {};
-
-const DEFAULT_SPAWN = { x: 0, y: 1.0, z: 15 };
-const DEFAULT_ROTATION_Y = Math.PI;
-
-function getBroadcastData(playerId) {
-  const p = players[playerId];
-  if (!p) return null;
-  return {
-    id: playerId,
-    position: p.position,
-    rotation: { y: p.rotationY },
-    username: p.username,
-    skinColor: p.skinColor,
-    hatColor: p.hatColor,
-    trailColor: p.trailColor,
-  };
+// Simple helper: random player color
+function randomColor() {
+  const colors = [0x3498db, 0xe74c3c, 0x2ecc71, 0xf1c40f, 0x9b59b6, 0x1abc9c];
+  return colors[Math.floor(Math.random() * colors.length)];
 }
 
+// When a client connects
 io.on('connection', (socket) => {
-  console.log('Player connected:', socket.id);
+  console.log('Client connected:', socket.id);
 
-  // Create new player
+  // Create a default player entry
   players[socket.id] = {
-    position: { ...DEFAULT_SPAWN },
-    rotationY: DEFAULT_ROTATION_Y,
-    health: 100,
-    score: 0,
-    username: 'Player',
-    skinColor: 0x3b82f6,
-    hatColor: 0xffffff,
-    trailColor: 0xffff00,
+    id: socket.id,
+    username: 'Guest',
+    color: randomColor(),
+    position: { x: 0, y: 1, z: 0 },
+    rotation: { x: 0, y: 0 },
+    health: START_HEALTH,
+    score: START_SCORE,
   };
 
-  // Send all existing players to the new client
-  const others = {};
-  Object.keys(players).forEach((id) => {
-    if (id !== socket.id) {
-      others[id] = getBroadcastData(id);
-    }
-  });
+  // Send initial state to this client
   socket.emit('init', {
     playerId: socket.id,
-    players: others,
+    players,
   });
 
-  // Send the new player's data + cosmetics to ALL clients (including the new one)
-  const newPlayerData = getBroadcastData(socket.id);
-  io.emit('playerJoined', newPlayerData);
+  // Tell others someone joined
+  socket.broadcast.emit('playerJoined', players[socket.id]);
 
-  // Send cosmetics of ALL existing players to the new client
-  Object.keys(players).forEach((id) => {
-    if (id !== socket.id) {
-      socket.emit('playerCosmeticsUpdated', {
-        playerId: id,
-        username: players[id].username,
-        skinColor: players[id].skinColor,
-        hatColor: players[id].hatColor,
-        trailColor: players[id].trailColor,
-      });
-    }
+  // Client sets their username
+  socket.on('setUsername', (username) => {
+    if (!players[socket.id]) return;
+    players[socket.id].username = String(username).slice(0, 24);
+
+    io.emit('playerUsernameUpdated', {
+      playerId: socket.id,
+      username: players[socket.id].username,
+    });
   });
 
-  // System message
-  io.emit('chatMessage', { username: 'System', message: 'A player joined the game.' });
-
-  socket.on('setCosmetics', (data) => {
-    console.log('🎨 [SERVER] Received setCosmetics from player:', socket.id);
-    console.log('  📦 Raw data received:', JSON.stringify(data));
-    console.log('  🎯 Skin color received:', data.skinColor, 'Type:', typeof data.skinColor, 'Hex:', data.skinColor ? '0x' + data.skinColor.toString(16).toUpperCase() : 'undefined/0');
-    console.log('  🎩 Hat color received:', data.hatColor, 'Type:', typeof data.hatColor, 'Hex:', data.hatColor ? '0x' + data.hatColor.toString(16).toUpperCase() : 'undefined/0');
-    console.log('  ✨ Trail color received:', data.trailColor, 'Type:', typeof data.trailColor, 'Hex:', data.trailColor ? '0x' + data.trailColor.toString(16).toUpperCase() : 'undefined/0');
-    console.log('  👤 Username received:', data.username);
-    
-    if (players[socket.id]) {
-        console.log('  📊 Previous player cosmetics:');
-        console.log('    🎯 Skin:', players[socket.id].skinColor, 'Hex: 0x' + players[socket.id].skinColor.toString(16).toUpperCase());
-        console.log('    🎩 Hat:', players[socket.id].hatColor, 'Hex: 0x' + players[socket.id].hatColor.toString(16).toUpperCase());
-        console.log('    ✨ Trail:', players[socket.id].trailColor, 'Hex: 0x' + players[socket.id].trailColor.toString(16).toUpperCase());
-        console.log('    👤 Username:', players[socket.id].username);
-        
-        // FIX: Check for undefined/null specifically, not falsy (0 is a valid color!)
-        players[socket.id].username = data.username !== undefined ? data.username : 'Player';
-        players[socket.id].skinColor = data.skinColor !== undefined ? data.skinColor : 0x3b82f6;
-        players[socket.id].hatColor = data.hatColor !== undefined ? data.hatColor : 0xffffff;
-        players[socket.id].trailColor = data.trailColor !== undefined ? data.trailColor : 0xffff00;
-        
-        console.log('  📈 New player cosmetics:');
-        console.log('    🎯 Skin:', players[socket.id].skinColor, 'Hex: 0x' + players[socket.id].skinColor.toString(16).toUpperCase());
-        console.log('    🎩 Hat:', players[socket.id].hatColor, 'Hex: 0x' + players[socket.id].hatColor.toString(16).toUpperCase());
-        console.log('    ✨ Trail:', players[socket.id].trailColor, 'Hex: 0x' + players[socket.id].trailColor.toString(16).toUpperCase());
-        console.log('    👤 Username:', players[socket.id].username);
-
-        // Broadcast updated cosmetics to everyone
-        const broadcastData = {
-            playerId: socket.id,
-            username: players[socket.id].username,
-            skinColor: players[socket.id].skinColor,
-            hatColor: players[socket.id].hatColor,
-            trailColor: players[socket.id].trailColor,
-        };
-        
-        console.log('  📤 Broadcasting cosmetics to all players:', JSON.stringify(broadcastData));
-        io.emit('playerCosmeticsUpdated', broadcastData);
-        
-        console.log('  ✅ Successfully updated and broadcasted cosmetics for player:', socket.id);
-    } else {
-        console.log('  ❌ Player not found for socket ID:', socket.id);
-    }
-  });
-
+  // Movement updates
   socket.on('move', (data) => {
-    if (players[socket.id]) {
-      players[socket.id].position = data.position;
-      players[socket.id].rotationY = data.rotation.y;
+    const p = players[socket.id];
+    if (!p || !data || !data.position || !data.rotation) return;
 
-      socket.broadcast.emit('playerMoved', {
-        playerId: socket.id,
-        position: data.position,
-        rotation: { y: data.rotation.y },
-      });
-    }
+    // Basic validation (avoid insane positions)
+    const pos = data.position;
+    const rot = data.rotation;
+
+    // Clamp position to arena bounds like your client
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
+    p.position = {
+      x: clamp(pos.x, -95, 95),
+      y: pos.y, // could clamp if needed
+      z: clamp(pos.z, -95, 95),
+    };
+    p.rotation = {
+      x: rot.x,
+      y: rot.y,
+    };
+
+    // Broadcast to others
+    socket.broadcast.emit('playerMoved', {
+      playerId: socket.id,
+      position: p.position,
+      rotation: p.rotation,
+    });
   });
 
+  // Shooting – just broadcast tracer to others
   socket.on('shoot', (data) => {
-    console.log('🔫 Player shot:', socket.id, 'Trail color:', players[socket.id].trailColor ? '0x' + players[socket.id].trailColor.toString(16).toUpperCase() : 'default');
+    if (!players[socket.id]) return;
+    if (!data || !data.from || !data.direction) return;
+
     socket.broadcast.emit('playerShot', {
       playerId: socket.id,
       from: data.from,
       direction: data.direction,
-      trailColor: players[socket.id].trailColor,
     });
   });
 
+  // Hit detection – client tells server who was hit
   socket.on('hit', (data) => {
-    console.log('💥 Hit event from:', socket.id, 'target:', data.targetId);
-    const target = players[data.targetId];
     const shooter = players[socket.id];
+    const targetId = data && data.targetId;
+    const target = players[targetId];
+    if (!shooter || !target) return;
 
-    if (target && shooter && data.targetId !== socket.id) {
-      console.log('  Valid hit, reducing health from', target.health, 'to', target.health - 25);
-      target.health -= 25;
+    // Example: each hit does 25 damage (matches your bots)
+    const DAMAGE = 25;
+    target.health = Math.max(0, target.health - DAMAGE);
 
-      shooter.score += 10;
-      io.to(socket.id).emit('scoreUpdate', { playerId: socket.id, score: shooter.score });
+    // Notify the target of new health
+    io.to(targetId).emit('playerHit', {
+      targetId,
+      health: target.health,
+      fromId: socket.id,
+    });
 
-      // FIXED: Include targetId and killerId in the playerHit event
-      io.to(data.targetId).emit('playerHit', { 
-        targetId: data.targetId,      // Added
-        killerId: socket.id,          // Added
-        health: target.health 
+    // If dead, award score to shooter and broadcast death
+    if (target.health <= 0) {
+      const KILL_SCORE = 50;
+      shooter.score += KILL_SCORE;
+      target.health = START_HEALTH;
+
+      io.emit('playerDied', {
+        killerId: socket.id,
+        targetId,
       });
 
-      if (target.health <= 0) {
-        console.log('  💀 Player died:', data.targetId, 'killed by:', socket.id);
-        // Reset health and position
-        target.health = 100;
-        target.position = { ...DEFAULT_SPAWN };
-        target.rotationY = DEFAULT_ROTATION_Y;
+      io.to(socket.id).emit('scoreUpdate', {
+        playerId: socket.id,
+        score: shooter.score,
+      });
 
-        shooter.score += 40;
-        io.to(socket.id).emit('scoreUpdate', { playerId: socket.id, score: shooter.score });
-
-        // Broadcast death
-        io.emit('playerDied', { 
-          targetId: data.targetId, 
-          killerId: socket.id 
-        });
-        
-        // Broadcast respawn position to everyone
-        socket.broadcast.emit('playerMoved', {
-          playerId: data.targetId,
-          position: target.position,
-          rotation: { y: target.rotationY },
-        });
-      }
-    } else {
-      console.log('  ❌ Invalid hit - target or shooter not found, or self-hit');
+      // Optionally respawn target at origin
+      target.position = { x: 0, y: 1, z: 0 };
+      io.emit('playerMoved', {
+        playerId: targetId,
+        position: target.position,
+        rotation: target.rotation,
+      });
     }
   });
 
+  // Quick chat messages
   socket.on('chatMessage', (data) => {
-    console.log('💬 Chat message from:', socket.id, 'message:', data.message);
-    if (players[socket.id] && data.message) {
-      io.emit('chatMessage', {
-        username: players[socket.id].username,
-        message: data.message.trim(),
-      });
-    }
+    const p = players[socket.id];
+    if (!p || !data || typeof data.message !== 'string') return;
+
+    const msg = data.message.slice(0, 120); // basic length limit
+    io.emit('chatMessage', {
+      username: p.username || 'Player',
+      message: msg,
+    });
   });
 
+  // Disconnection
   socket.on('disconnect', () => {
-    console.log('Player disconnected:', socket.id);
+    console.log('Client disconnected:', socket.id);
     delete players[socket.id];
     io.emit('playerLeft', socket.id);
-    io.emit('chatMessage', { username: 'System', message: 'A player left the game.' });
   });
 });
 
+// Optional health check route
+app.get('/health', (_req, res) => {
+  res.status(200).send('OK');
+});
+
+// Start server
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Shotstrike server listening on port ${PORT}`);
 });
