@@ -1,5 +1,7 @@
-// server.js - Updated with Shop System
+// server.js - Complete with Shop System & AI Chat Filter
 const express = require('express');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
+
 const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
@@ -9,10 +11,132 @@ const io = require('socket.io')(http, {
     }
 });
 
+// Initialize Google AI
+const genAI = new GoogleGenerativeAI("AIzaSyDRLrgGoMPh0uHBDpPbaIdIEDGssPLNZKM");
+
+// Basic filter as fallback
+const basicFilter = (message) => {
+    const blockedPatterns = [
+        /n[i1!]gg[ae3r]+/gi,
+        /f[a@4]g+[o0]t/gi,
+        /c[o0]ck/gi,
+        /[ck]unt/gi,
+        /wh[o0]re/gi,
+        /b[i1]tch/gi,
+        /d[i1]ck/gi,
+        /p[e3]n[i1]s/gi,
+        /v[a@4]g[i1]n[a@]/gi,
+        /[a@]ss+[h4][o0]l[e3]/gi,
+        /r[a@]p[e3]/gi,
+        /h[i1]tler/gi,
+        /n[a@]z[i1]/gi,
+        /k[i1]ll.*y[o0]u[r]?s[e3]lf/gi,
+        /su[i1]c[i1]d[e3]/gi,
+        /d[i1][e3] .*f[a@4]g/gi
+    ];
+    
+    // Check for excessive profanity
+    const profanityCount = (message.match(/fuck|shit|damn|crap|hell/gi) || []).length;
+    if (profanityCount > 3) return false;
+    
+    // Check for personal info/doxxing attempts
+    const personalInfoPatterns = [
+        /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/, // Phone numbers
+        /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/, // Email
+        /\b\d{5}(?:[-\s]\d{4})?\b/, // Zip codes
+    ];
+    
+    if (personalInfoPatterns.some(pattern => pattern.test(message))) return false;
+    
+    return !blockedPatterns.some(pattern => pattern.test(message));
+};
+
+// AI-powered moderation function
+async function moderateMessage(message) {
+    try {
+        // Use the more efficient gemini-1.5-flash for speed
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        
+        const prompt = `Analyze this gaming chat message. Return ONLY "SAFE" or "UNSAFE" (no other text).
+        
+        Consider these violations:
+        1. Hate speech, racism, discrimination
+        2. Harassment or bullying  
+        3. Explicit sexual content
+        4. Violent threats or glorification of violence
+        5. Personal information/doxxing
+        6. Excessive profanity (>3 instances)
+        7. Spam (repeating same message)
+        
+        Gaming context allowed:
+        - Mild competitive banter is OK
+        - "GG", "WP", "Nice shot" are fine
+        - Trash talk like "you're bad" is OK
+        - "I'll kill you" in game context is OK
+        
+        Message: "${message.substring(0, 200)}"  // Truncate to avoid token limits
+        
+        Response:`;
+        
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text().trim().toUpperCase();
+        
+        console.log("Moderation result for:", message.substring(0, 50) + "...", "->", text);
+        
+        return text === "SAFE";
+        
+    } catch (error) {
+        console.error("AI Moderation API error, using basic filter:", error.message);
+        // Fallback to basic filter
+        return basicFilter(message);
+    }
+}
+
 // Player data storage
 const players = {};
-const playerUpgrades = {}; // Store player upgrades
-const playerCoins = {}; // Store player coins
+const playerUpgrades = {};
+const playerCoins = {};
+const messageHistory = {}; // Track recent messages for spam detection
+
+// Spam detection
+function isSpam(playerId, message) {
+    if (!messageHistory[playerId]) {
+        messageHistory[playerId] = [];
+    }
+    
+    const now = Date.now();
+    const recentMessages = messageHistory[playerId].filter(
+        msg => now - msg.timestamp < 10000 // 10 seconds
+    );
+    
+    // Check for repeated messages
+    const sameMessageCount = recentMessages.filter(
+        msg => msg.message.toLowerCase() === message.toLowerCase()
+    ).length;
+    
+    // Check for rapid messages
+    const messageCount = recentMessages.length;
+    
+    // Add current message to history
+    messageHistory[playerId].push({
+        message: message,
+        timestamp: now
+    });
+    
+    // Keep only last 10 messages
+    if (messageHistory[playerId].length > 10) {
+        messageHistory[playerId] = messageHistory[playerId].slice(-10);
+    }
+    
+    // If same message 3+ times in 10 seconds = spam
+    if (sameMessageCount >= 3) return true;
+    
+    // If 5+ messages in 10 seconds = spam
+    if (messageCount >= 5) return true;
+    
+    return false;
+}
 
 // Shop items configuration (matches client)
 const shopItems = {
@@ -210,16 +334,18 @@ io.on('connection', (socket) => {
     });
     
     // Handle shop purchases
-    socket.on('purchaseUpgrade', (data) => {
-        const { upgradeId, upgradeName, price } = data;
+    socket.on('purchaseUpgrade', async (data) => {
+        const { upgradeId, price } = data;
         const playerId = socket.id;
         
         // Find the item
         let item = null;
+        let itemName = '';
         for (const [category, items] of Object.entries(shopItems)) {
             const found = items.find(i => i.id === upgradeId);
             if (found) {
                 item = found;
+                itemName = found.name;
                 break;
             }
         }
@@ -276,7 +402,7 @@ io.on('connection', (socket) => {
         socket.emit('upgradePurchased', {
             success: true,
             upgradeId: upgradeId,
-            upgradeName: upgradeName,
+            upgradeName: itemName,
             newCoins: playerCoins[playerId]
         });
         
@@ -286,7 +412,7 @@ io.on('connection', (socket) => {
             coins: playerCoins[playerId]
         });
         
-        console.log(`Player ${playerId} purchased ${upgradeName} (Level ${currentLevel + 1})`);
+        console.log(`Player ${playerId} purchased ${itemName} (Level ${currentLevel + 1})`);
     });
     
     // Handle player movement
@@ -372,14 +498,58 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Handle chat messages
-    socket.on('chatMessage', (data) => {
-        const message = data.message;
+    // Handle chat messages WITH FILTERING
+    socket.on('chatMessage', async (data) => {
+        const message = data.message.trim();
         const username = players[socket.id]?.username || 'Guest';
-        io.emit('chatMessage', {
-            username: username,
-            message: message
-        });
+        
+        // Validate message
+        if (!message || message.length === 0) return;
+        if (message.length > 200) {
+            socket.emit('chatMessage', {
+                username: 'System',
+                message: 'Message too long (max 200 characters)'
+            });
+            return;
+        }
+        
+        // Check for spam
+        if (isSpam(socket.id, message)) {
+            socket.emit('chatMessage', {
+                username: 'System',
+                message: 'Message blocked: Sending too many messages'
+            });
+            return;
+        }
+        
+        try {
+            // Moderate message using AI
+            const isSafe = await moderateMessage(message);
+            
+            if (!isSafe) {
+                socket.emit('chatMessage', {
+                    username: 'System',
+                    message: 'Message blocked: Inappropriate content detected'
+                });
+                console.log(`Blocked inappropriate message from ${socket.id}: ${message.substring(0, 50)}...`);
+                return;
+            }
+            
+            // Send the message to all players
+            io.emit('chatMessage', {
+                username: username,
+                message: message
+            });
+            
+            console.log(`Chat from ${username} (${socket.id}): ${message}`);
+            
+        } catch (error) {
+            console.error("Error processing chat message:", error);
+            socket.emit('chatMessage', {
+                username: 'System',
+                message: 'Error processing message'
+            });
+        }
     });
     
     // Handle disconnect
@@ -393,6 +563,7 @@ io.on('connection', (socket) => {
         delete players[socket.id];
         delete playerUpgrades[socket.id];
         delete playerCoins[socket.id];
+        delete messageHistory[socket.id];
     });
     
     // Periodic coin rewards for playing
@@ -412,4 +583,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
+    console.log('Chat filtering is ACTIVE using Google AI');
 });
