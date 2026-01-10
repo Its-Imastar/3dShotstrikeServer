@@ -20,16 +20,19 @@ const io = require('socket.io')(http, {
 // Initialize Google Gemini AI (FREE TIER)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Test what models are available (remove after testing)
-async function listModels() {
+// Test API key on startup
+async function testGeminiAPI() {
     try {
-        const models = await genAI.listModels();
-        console.log('Available models:', models);
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+        const result = await model.generateContent("Say hello");
+        const response = await result.response;
+        console.log("✅ Gemini API working! Response:", response.text());
     } catch (error) {
-        console.error('Error listing models:', error);
+        console.error("❌ Gemini API test failed:", error.message);
+        console.log("Chat filter will use basic pattern matching instead.");
     }
 }
-listModels();
+testGeminiAPI();
 
 // Validate API key on startup
 if (!process.env.GEMINI_API_KEY) {
