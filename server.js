@@ -1,4 +1,4 @@
-// server.js - Complete with Shop System & AI Chat Filter (OpenAI)
+// server.js - Complete with Shop System & FREE AI Chat Filter (Google Gemini)
 
 // Load environment variables in development
 if (process.env.NODE_ENV !== 'production') {
@@ -6,7 +6,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 const express = require('express');
-const OpenAI = require('openai');
+const { GoogleGenerativeAI } = require("@google/generative-ai");
 
 const app = express();
 const http = require('http').createServer(app);
@@ -17,16 +17,12 @@ const io = require('socket.io')(http, {
     }
 });
 
-// Initialize OpenAI
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
-});
+// Initialize Google Gemini AI (FREE TIER)
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 // Validate API key on startup
-if (!process.env.OPENAI_API_KEY) {
-    console.error('ERROR: OPENAI_API_KEY environment variable is not set!');
-    console.error('Please set it in Render dashboard or your .env file');
-    process.exit(1);
+if (!process.env.GEMINI_API_KEY) {
+    console.warn('WARNING: GEMINI_API_KEY not set. Chat filter will use basic pattern matching only.');
 }
 
 // Basic filter as fallback
@@ -47,7 +43,9 @@ const basicFilter = (message) => {
         /n[a@]z[i1]/gi,
         /k[i1]ll.*y[o0]u[r]?s[e3]lf/gi,
         /su[i1]c[i1]d[e3]/gi,
-        /d[i1][e3] .*f[a@4]g/gi
+        /d[i1][e3] .*f[a@4]g/gi,
+        /ret[a@4]rd/gi,
+        /tr[a@4]nny/gi
     ];
     
     // Check for excessive profanity
@@ -66,16 +64,19 @@ const basicFilter = (message) => {
     return !blockedPatterns.some(pattern => pattern.test(message));
 };
 
-// AI-powered moderation function using OpenAI
+// AI-powered moderation function using FREE Gemini
 async function moderateMessage(message) {
+    // If no API key, use basic filter
+    if (!process.env.GEMINI_API_KEY) {
+        return basicFilter(message);
+    }
+    
     try {
-        const completion = await openai.chat.completions.create({
-            model: "gpt-4o-mini", // Fast and cost-effective model
-            messages: [
-                {
-                    role: "system",
-                    content: `You are a chat moderation system for a gaming platform. Analyze messages and respond with ONLY "SAFE" or "UNSAFE" (no other text).
-
+        // Use the FREE gemini-1.5-flash model
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        
+        const prompt = `Analyze this gaming chat message. Return ONLY "SAFE" or "UNSAFE" (no other text).
+        
 Consider these violations:
 1. Hate speech, racism, discrimination
 2. Harassment or bullying  
@@ -91,25 +92,20 @@ Gaming context allowed:
 - Trash talk like "you're bad" is OK
 - "I'll kill you" in game context is OK
 
-Respond with ONLY one word: SAFE or UNSAFE`
-                },
-                {
-                    role: "user",
-                    content: message.substring(0, 200) // Truncate to avoid token limits
-                }
-            ],
-            temperature: 0.3, // Lower temperature for more consistent results
-            max_tokens: 10 // We only need one word
-        });
+Message: "${message.substring(0, 200)}"
+
+Response:`;
         
-        const response = completion.choices[0].message.content.trim().toUpperCase();
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const text = response.text().trim().toUpperCase();
         
-        console.log("Moderation result for:", message.substring(0, 50) + "...", "->", response);
+        console.log("AI Moderation:", message.substring(0, 30) + "...", "->", text);
         
-        return response === "SAFE";
+        return text === "SAFE";
         
     } catch (error) {
-        console.error("AI Moderation API error, using basic filter:", error.message);
+        console.error("AI Moderation error, using basic filter:", error.message);
         // Fallback to basic filter
         return basicFilter(message);
     }
@@ -119,7 +115,7 @@ Respond with ONLY one word: SAFE or UNSAFE`
 const players = {};
 const playerUpgrades = {};
 const playerCoins = {};
-const messageHistory = {}; // Track recent messages for spam detection
+const messageHistory = {};
 
 // Spam detection
 function isSpam(playerId, message) {
@@ -129,38 +125,31 @@ function isSpam(playerId, message) {
     
     const now = Date.now();
     const recentMessages = messageHistory[playerId].filter(
-        msg => now - msg.timestamp < 10000 // 10 seconds
+        msg => now - msg.timestamp < 10000
     );
     
-    // Check for repeated messages
     const sameMessageCount = recentMessages.filter(
         msg => msg.message.toLowerCase() === message.toLowerCase()
     ).length;
     
-    // Check for rapid messages
     const messageCount = recentMessages.length;
     
-    // Add current message to history
     messageHistory[playerId].push({
         message: message,
         timestamp: now
     });
     
-    // Keep only last 10 messages
     if (messageHistory[playerId].length > 10) {
         messageHistory[playerId] = messageHistory[playerId].slice(-10);
     }
     
-    // If same message 3+ times in 10 seconds = spam
     if (sameMessageCount >= 3) return true;
-    
-    // If 5+ messages in 10 seconds = spam
     if (messageCount >= 5) return true;
     
     return false;
 }
 
-// Shop items configuration (matches client)
+// Shop items configuration
 const shopItems = {
     blaster: [
         {
@@ -241,17 +230,14 @@ const shopItems = {
     ]
 };
 
-// Calculate item price
 function calculateItemPrice(item, currentLevel) {
     if (currentLevel >= item.maxLevel) return Infinity;
-    
     if (item.priceMultiplier) {
         return Math.floor(item.basePrice * Math.pow(item.priceMultiplier, currentLevel));
     }
     return item.basePrice;
 }
 
-// Apply upgrade stats
 function applyUpgradeStats(playerId, item) {
     const currentLevel = getUpgradeLevel(playerId, item.id);
     
@@ -286,7 +272,6 @@ function getUpgradeLevel(playerId, itemId) {
     return playerUpgrades[playerId][itemId];
 }
 
-// Initialize player data
 function initializePlayerData(playerId) {
     if (!playerUpgrades[playerId]) {
         playerUpgrades[playerId] = {
@@ -302,14 +287,13 @@ function initializePlayerData(playerId) {
     }
     
     if (!playerCoins[playerId]) {
-        playerCoins[playerId] = 100; // Starting coins
+        playerCoins[playerId] = 100;
     }
 }
 
 io.on('connection', (socket) => {
     console.log('Player connected:', socket.id);
     
-    // Initialize player
     players[socket.id] = {
         id: socket.id,
         username: 'Guest',
@@ -320,25 +304,20 @@ io.on('connection', (socket) => {
         score: 0
     };
     
-    // Initialize player upgrades and coins
     initializePlayerData(socket.id);
     
-    // Send existing players to new player
     socket.emit('init', {
         playerId: socket.id,
         players: players
     });
     
-    // Send initial coins and upgrades
     socket.emit('coinUpdate', {
         playerId: socket.id,
         coins: playerCoins[socket.id]
     });
     
-    // Notify other players
     socket.broadcast.emit('playerJoined', players[socket.id]);
     
-    // Handle username setting
     socket.on('setUsername', (username) => {
         players[socket.id].username = username;
         socket.broadcast.emit('playerUsernameUpdated', {
@@ -347,7 +326,6 @@ io.on('connection', (socket) => {
         });
     });
     
-    // Handle player upgrades
     socket.on('playerUpgrades', (upgrades) => {
         playerUpgrades[socket.id] = {
             ...playerUpgrades[socket.id],
@@ -355,12 +333,10 @@ io.on('connection', (socket) => {
         };
     });
     
-    // Handle shop purchases
     socket.on('purchaseUpgrade', async (data) => {
         const { upgradeId, price } = data;
         const playerId = socket.id;
         
-        // Find the item
         let item = null;
         let itemName = '';
         for (const [category, items] of Object.entries(shopItems)) {
@@ -380,7 +356,6 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Check if player has enough coins
         if (playerCoins[playerId] < price) {
             socket.emit('upgradePurchased', {
                 success: false,
@@ -389,7 +364,6 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Check max level
         const currentLevel = getUpgradeLevel(playerId, upgradeId);
         if (currentLevel >= item.maxLevel) {
             socket.emit('upgradePurchased', {
@@ -399,20 +373,16 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Deduct coins
         playerCoins[playerId] -= price;
         
-        // Update upgrade level
         if (!playerUpgrades[playerId][upgradeId]) {
             playerUpgrades[playerId][upgradeId] = 1;
         } else {
             playerUpgrades[playerId][upgradeId]++;
         }
         
-        // Apply stats
         applyUpgradeStats(playerId, item);
         
-        // Update blaster level if it's a blaster upgrade
         if (upgradeId.startsWith('blaster_')) {
             playerUpgrades[playerId].blasterLevel = Math.max(
                 playerUpgrades[playerId].blasterLevel || 1,
@@ -420,7 +390,6 @@ io.on('connection', (socket) => {
             );
         }
         
-        // Send success response
         socket.emit('upgradePurchased', {
             success: true,
             upgradeId: upgradeId,
@@ -428,7 +397,6 @@ io.on('connection', (socket) => {
             newCoins: playerCoins[playerId]
         });
         
-        // Send coin update
         socket.emit('coinUpdate', {
             playerId: playerId,
             coins: playerCoins[playerId]
@@ -437,7 +405,6 @@ io.on('connection', (socket) => {
         console.log(`Player ${playerId} purchased ${itemName} (Level ${currentLevel + 1})`);
     });
     
-    // Handle player movement
     socket.on('move', (data) => {
         if (players[socket.id]) {
             players[socket.id].position = data.position;
@@ -450,7 +417,6 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Handle shooting
     socket.on('shoot', (data) => {
         socket.broadcast.emit('playerShot', {
             playerId: socket.id,
@@ -459,57 +425,45 @@ io.on('connection', (socket) => {
         });
     });
     
-    // Handle hits
     socket.on('hit', (data) => {
         const targetId = data.targetId;
         if (players[targetId] && players[socket.id]) {
-            // Get shooter's damage from upgrades
             const shooterDamage = playerUpgrades[socket.id]?.damage || 25;
-            
-            // Apply damage reduction if target has it
             const targetDamageReduction = playerUpgrades[targetId]?.damageReduction || 0;
             const actualDamage = shooterDamage * (1 - targetDamageReduction / 100);
             
             players[targetId].health -= actualDamage;
             
-            // Emit health update
             io.to(targetId).emit('playerHealthUpdate', {
                 playerId: targetId,
                 health: players[targetId].health
             });
             
-            // Emit hit event for visual feedback
             io.to(targetId).emit('playerHit', {
                 targetId: targetId,
                 health: players[targetId].health,
                 damage: actualDamage
             });
             
-            // Check if player died
             if (players[targetId].health <= 0) {
-                // Respawn player
                 players[targetId].health = playerUpgrades[targetId]?.maxHP || 100;
                 players[targetId].position = { x: 0, y: 1.67, z: 0 };
                 players[targetId].rotation = { x: 0, y: 0 };
                 
-                // Update shooter's score and give coins
                 players[socket.id].score += 100;
-                playerCoins[socket.id] += 30; // Kill reward
+                playerCoins[socket.id] += 30;
                 
-                // Emit death event
                 io.emit('playerDied', {
                     targetId: targetId,
                     killerId: socket.id,
                     killerScore: players[socket.id].score
                 });
                 
-                // Update shooter's score
                 io.to(socket.id).emit('scoreUpdate', {
                     playerId: socket.id,
                     score: players[socket.id].score
                 });
                 
-                // Update shooter's coins
                 io.to(socket.id).emit('coinUpdate', {
                     playerId: socket.id,
                     coins: playerCoins[socket.id]
@@ -520,12 +474,10 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Handle chat messages WITH FILTERING
     socket.on('chatMessage', async (data) => {
         const message = data.message.trim();
         const username = players[socket.id]?.username || 'Guest';
         
-        // Validate message
         if (!message || message.length === 0) return;
         if (message.length > 200) {
             socket.emit('chatMessage', {
@@ -535,7 +487,6 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Check for spam
         if (isSpam(socket.id, message)) {
             socket.emit('chatMessage', {
                 username: 'System',
@@ -545,7 +496,6 @@ io.on('connection', (socket) => {
         }
         
         try {
-            // Moderate message using AI
             const isSafe = await moderateMessage(message);
             
             if (!isSafe) {
@@ -553,20 +503,19 @@ io.on('connection', (socket) => {
                     username: 'System',
                     message: 'Message blocked: Inappropriate content detected'
                 });
-                console.log(`Blocked inappropriate message from ${socket.id}: ${message.substring(0, 50)}...`);
+                console.log(`Blocked message from ${socket.id}: ${message.substring(0, 50)}...`);
                 return;
             }
             
-            // Send the message to all players
             io.emit('chatMessage', {
                 username: username,
                 message: message
             });
             
-            console.log(`Chat from ${username} (${socket.id}): ${message}`);
+            console.log(`Chat from ${username}: ${message}`);
             
         } catch (error) {
-            console.error("Error processing chat message:", error);
+            console.error("Error processing chat:", error);
             socket.emit('chatMessage', {
                 username: 'System',
                 message: 'Error processing message'
@@ -574,37 +523,28 @@ io.on('connection', (socket) => {
         }
     });
     
-    // Handle disconnect
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
-        
-        // Notify other players
         io.emit('playerLeft', socket.id);
-        
-        // Clean up data
         delete players[socket.id];
         delete playerUpgrades[socket.id];
         delete playerCoins[socket.id];
         delete messageHistory[socket.id];
     });
     
-    // Periodic coin rewards for playing
     setInterval(() => {
         if (players[socket.id]) {
-            // Give 10 coins every minute for playing
             playerCoins[socket.id] += 10;
             socket.emit('coinUpdate', {
                 playerId: socket.id,
                 coins: playerCoins[socket.id]
             });
         }
-    }, 60000); // Every minute
+    }, 60000);
 });
 
-// Start server
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    console.log('Chat filtering is ACTIVE using OpenAI GPT-4o-mini');
-    console.log('Environment:', process.env.NODE_ENV || 'development');
+    console.log('Chat filtering:', process.env.GEMINI_API_KEY ? 'AI ACTIVE (Gemini FREE)' : 'Basic filter only');
 });
