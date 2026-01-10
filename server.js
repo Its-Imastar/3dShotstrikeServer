@@ -23,7 +23,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Test API key on startup
 async function testGeminiAPI() {
     try {
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
         const result = await model.generateContent("Say hello");
         const response = await result.response;
         console.log("✅ Gemini API working! Response:", response.text());
@@ -87,7 +87,7 @@ async function moderateMessage(message) {
     
     try {
         // Use the FREE gemini-pro model
-        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
+        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
         
         const prompt = `Analyze this gaming chat message. Return ONLY "SAFE" or "UNSAFE" (no other text).
         
