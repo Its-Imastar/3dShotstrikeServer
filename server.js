@@ -1,6 +1,6 @@
-// server.js - Complete with Shop System & AI Chat Filter
+// server.js - Complete with Shop System & AI Chat Filter (OpenAI)
 const express = require('express');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
+const OpenAI = require('openai');
 
 const app = express();
 const http = require('http').createServer(app);
@@ -11,8 +11,10 @@ const io = require('socket.io')(http, {
     }
 });
 
-// Initialize Google AI
-const genAI = new GoogleGenerativeAI("AIzaSyDRLrgGoMPh0uHBDpPbaIdIEDGssPLNZKM");
+// Initialize OpenAI
+const openai = new OpenAI({
+    apiKey: process.env.OPENAI_API_KEY || "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"
+});
 
 // Basic filter as fallback
 const basicFilter = (message) => {
@@ -51,40 +53,47 @@ const basicFilter = (message) => {
     return !blockedPatterns.some(pattern => pattern.test(message));
 };
 
-// AI-powered moderation function
+// AI-powered moderation function using OpenAI
 async function moderateMessage(message) {
     try {
-        // Use the more efficient gemini-1.5-flash for speed
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const completion = await openai.chat.completions.create({
+            model: "gpt-4o-mini", // Fast and cost-effective model
+            messages: [
+                {
+                    role: "system",
+                    content: `You are a chat moderation system for a gaming platform. Analyze messages and respond with ONLY "SAFE" or "UNSAFE" (no other text).
+
+Consider these violations:
+1. Hate speech, racism, discrimination
+2. Harassment or bullying  
+3. Explicit sexual content
+4. Violent threats or glorification of violence
+5. Personal information/doxxing
+6. Excessive profanity (>3 instances)
+7. Spam (repeating same message)
+
+Gaming context allowed:
+- Mild competitive banter is OK
+- "GG", "WP", "Nice shot" are fine
+- Trash talk like "you're bad" is OK
+- "I'll kill you" in game context is OK
+
+Respond with ONLY one word: SAFE or UNSAFE`
+                },
+                {
+                    role: "user",
+                    content: message.substring(0, 200) // Truncate to avoid token limits
+                }
+            ],
+            temperature: 0.3, // Lower temperature for more consistent results
+            max_tokens: 10 // We only need one word
+        });
         
-        const prompt = `Analyze this gaming chat message. Return ONLY "SAFE" or "UNSAFE" (no other text).
+        const response = completion.choices[0].message.content.trim().toUpperCase();
         
-        Consider these violations:
-        1. Hate speech, racism, discrimination
-        2. Harassment or bullying  
-        3. Explicit sexual content
-        4. Violent threats or glorification of violence
-        5. Personal information/doxxing
-        6. Excessive profanity (>3 instances)
-        7. Spam (repeating same message)
+        console.log("Moderation result for:", message.substring(0, 50) + "...", "->", response);
         
-        Gaming context allowed:
-        - Mild competitive banter is OK
-        - "GG", "WP", "Nice shot" are fine
-        - Trash talk like "you're bad" is OK
-        - "I'll kill you" in game context is OK
-        
-        Message: "${message.substring(0, 200)}"  // Truncate to avoid token limits
-        
-        Response:`;
-        
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text().trim().toUpperCase();
-        
-        console.log("Moderation result for:", message.substring(0, 50) + "...", "->", text);
-        
-        return text === "SAFE";
+        return response === "SAFE";
         
     } catch (error) {
         console.error("AI Moderation API error, using basic filter:", error.message);
@@ -583,5 +592,5 @@ io.on('connection', (socket) => {
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
-    console.log('Chat filtering is ACTIVE using Google AI');
+    console.log('Chat filtering is ACTIVE using OpenAI GPT-4o-mini');
 });
