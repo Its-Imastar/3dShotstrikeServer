@@ -128,7 +128,7 @@ async function moderateMessage(message) {
     try {
         // Use the FREE gemini-1.5-flash model (correct name for v0.21.0+)
         const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-flash-latest"
+            model: "gemini-3-flash-preview"
         });
         
         const prompt = `You are a strict chat moderator. Analyze this message and respond with ONLY one word: "SAFE" or "UNSAFE"
