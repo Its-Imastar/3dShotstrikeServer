@@ -20,20 +20,6 @@ const io = require('socket.io')(http, {
 // Initialize Google Gemini AI (FREE TIER)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// Test API key on startup
-async function testGeminiAPI() {
-    try {
-        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
-        const result = await model.generateContent("Say hello");
-        const response = await result.response;
-        console.log("✅ Gemini API working! Response:", response.text());
-    } catch (error) {
-        console.error("❌ Gemini API test failed:", error.message);
-        console.log("Chat filter will use basic pattern matching instead.");
-    }
-}
-testGeminiAPI();
-
 // Validate API key on startup
 if (!process.env.GEMINI_API_KEY) {
     console.warn('WARNING: GEMINI_API_KEY not set. Chat filter will use basic pattern matching only.');
@@ -41,74 +27,130 @@ if (!process.env.GEMINI_API_KEY) {
 
 // Basic filter as fallback
 const basicFilter = (message) => {
+    const lowerMsg = message.toLowerCase();
+    
+    // Comprehensive blocked patterns
     const blockedPatterns = [
+        // Slurs (racial)
         /n[i1!]gg[ae3r]+/gi,
-        /f[a@4]g+[o0]t/gi,
+        /n[i1!]g+[ae3r]+/gi,
+        /ch[i1]nk/gi,
+        /sp[i1]c/gi,
+        /k[i1]k[e3]/gi,
+        /w[e3]tb[a@4]ck/gi,
+        /p[a@4]k[i1]/gi,
+        /r[a@4]g+h[e3][a@4]d/gi,
+        
+        // Slurs (homophobic/transphobic)
+        /f[a@4]g+[o0]?t?/gi,
+        /f[a@4]g+/gi,
+        /qu[e3]{2}r(?!y)/gi,
+        /tr[a@4]nn(y|ie)/gi,
+        /d[i1]k[e3]/gi,
+        
+        // Slurs (ableist)
+        /ret[a@4]rd/gi,
+        /r[e3]t[a@4]rd/gi,
+        /m[o0]ng[o0]l[o0]?[i1]d/gi,
+        
+        // Sexual/explicit
         /c[o0]ck/gi,
         /[ck]unt/gi,
+        /p[u]ssy/gi,
         /wh[o0]re/gi,
-        /b[i1]tch/gi,
+        /sl[u]t/gi,
         /d[i1]ck/gi,
         /p[e3]n[i1]s/gi,
         /v[a@4]g[i1]n[a@]/gi,
-        /[a@]ss+[h4][o0]l[e3]/gi,
-        /r[a@]p[e3]/gi,
-        /h[i1]tler/gi,
-        /n[a@]z[i1]/gi,
+        /t[i1]ts?/gi,
+        /b[o0]{2}bs?/gi,
+        /[a@]n[a@]l/gi,
+        /[o0]rg[a@]sm/gi,
+        /m[a@]sturb[a@]t/gi,
+        /r[a@]p[e3]d?/gi,
+        /r[a@]p[i1]st/gi,
+        
+        // Violence/self-harm
         /k[i1]ll.*y[o0]u[r]?s[e3]lf/gi,
         /su[i1]c[i1]d[e3]/gi,
-        /d[i1][e3] .*f[a@4]g/gi,
-        /ret[a@4]rd/gi,
-        /tr[a@4]nny/gi
+        /h[a@]ng.*y[o0]urs[e3]lf/gi,
+        /cut.*y[o0]urs[e3]lf/gi,
+        
+        // Hate symbols/groups
+        /h[i1]tl[e3]r/gi,
+        /n[a@]z[i1]/gi,
+        /sw[a@]st[i1]k[a@]/gi,
+        /kkk/gi,
+        /[a@]rty[a@]n/gi
     ];
     
-    // Check for excessive profanity
-    const profanityCount = (message.match(/fuck|shit|damn|crap|hell/gi) || []).length;
-    if (profanityCount > 3) return false;
+    // Check blocked patterns
+    if (blockedPatterns.some(pattern => pattern.test(message))) {
+        return false;
+    }
     
-    // Check for personal info/doxxing attempts
+    // Check for excessive profanity (allow 2, block 3+)
+    const profanityCount = (message.match(/fuck|shit|bitch|ass\b|damn|hell|crap/gi) || []).length;
+    if (profanityCount > 2) {
+        console.log('Blocked: Too much profanity');
+        return false;
+    }
+    
+    // Check for personal info/doxxing
     const personalInfoPatterns = [
         /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/, // Phone numbers
         /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/, // Email
         /\b\d{5}(?:[-\s]\d{4})?\b/, // Zip codes
+        /\b\d{1,5}\s+\w+\s+(street|st|avenue|ave|road|rd|drive|dr|lane|ln)\b/gi // Addresses
     ];
     
-    if (personalInfoPatterns.some(pattern => pattern.test(message))) return false;
+    if (personalInfoPatterns.some(pattern => pattern.test(message))) {
+        console.log('Blocked: Personal info detected');
+        return false;
+    }
     
-    return !blockedPatterns.some(pattern => pattern.test(message));
+    return true;
 };
 
 // AI-powered moderation function using FREE Gemini
 async function moderateMessage(message) {
-    // If no API key, use basic filter
+    // FIRST: Run basic filter (catches obvious violations immediately)
+    if (!basicFilter(message)) {
+        console.log("Blocked by basic filter:", message.substring(0, 30));
+        return false;
+    }
+    
+    // If no API key, basic filter already passed it
     if (!process.env.GEMINI_API_KEY) {
-        return basicFilter(message);
+        return true;
     }
     
     try {
-        // Use the FREE gemini-pro model
-        const model = genAI.getGenerativeModel({ model: "gemini-3-flash-preview" });
+        // Use the FREE gemini-1.5-flash model (correct name for v0.21.0+)
+        const model = genAI.getGenerativeModel({ 
+            model: "gemini-1.5-flash-latest"
+        });
         
-        const prompt = `Analyze this gaming chat message. Return ONLY "SAFE" or "UNSAFE" (no other text).
-        
-Consider these violations:
-1. Hate speech, racism, discrimination
-2. Harassment or bullying  
-3. Explicit sexual content
-4. Violent threats or glorification of violence
-5. Personal information/doxxing
-6. Excessive profanity (>3 instances)
-7. Spam (repeating same message)
+        const prompt = `You are a strict chat moderator. Analyze this message and respond with ONLY one word: "SAFE" or "UNSAFE"
 
-Gaming context allowed:
-- Mild competitive banter is OK
-- "GG", "WP", "Nice shot" are fine
-- Trash talk like "you're bad" is OK
-- "I'll kill you" in game context is OK
+UNSAFE if message contains:
+- ANY slurs or hate speech (racial, homophobic, transphobic, ableist)
+- Sexual/explicit content or body parts
+- Harassment, bullying, or personal attacks
+- Telling someone to harm themselves
+- Real-world violence threats
+- Personal information (phone, email, address)
+- More than 2 curse words
+- Spam or gibberish
 
-Message: "${message.substring(0, 200)}"
+SAFE if message contains:
+- Normal game chat ("gg", "nice shot", "let's go")
+- Mild trash talk ("you're bad", "ez", "get good")
+- Game violence context ("I'll kill you in game")
 
-Response:`;
+Message to analyze: "${message.substring(0, 200)}"
+
+Your response (SAFE or UNSAFE):`;
         
         const result = await model.generateContent(prompt);
         const response = await result.response;
