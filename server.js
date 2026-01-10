@@ -91,7 +91,7 @@ const basicFilter = (message) => {
     
     // Check for excessive profanity (allow 2, block 3+)
     const profanityCount = (message.match(/fuck|shit|bitch|ass\b|damn|hell|crap/gi) || []).length;
-    if (profanityCount > 2) {
+    if (profanityCount > 0) {
         console.log('Blocked: Too much profanity');
         return false;
     }
