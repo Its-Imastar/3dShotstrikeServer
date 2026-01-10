@@ -20,6 +20,17 @@ const io = require('socket.io')(http, {
 // Initialize Google Gemini AI (FREE TIER)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// Test what models are available (remove after testing)
+async function listModels() {
+    try {
+        const models = await genAI.listModels();
+        console.log('Available models:', models);
+    } catch (error) {
+        console.error('Error listing models:', error);
+    }
+}
+listModels();
+
 // Validate API key on startup
 if (!process.env.GEMINI_API_KEY) {
     console.warn('WARNING: GEMINI_API_KEY not set. Chat filter will use basic pattern matching only.');
