@@ -1,4 +1,10 @@
 // server.js - Complete with Shop System & AI Chat Filter (OpenAI)
+
+// Load environment variables in development
+if (process.env.NODE_ENV !== 'production') {
+    require('dotenv').config();
+}
+
 const express = require('express');
 const OpenAI = require('openai');
 
@@ -13,8 +19,15 @@ const io = require('socket.io')(http, {
 
 // Initialize OpenAI
 const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY || "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"
+    apiKey: process.env.OPENAI_API_KEY
 });
+
+// Validate API key on startup
+if (!process.env.OPENAI_API_KEY) {
+    console.error('ERROR: OPENAI_API_KEY environment variable is not set!');
+    console.error('Please set it in Render dashboard or your .env file');
+    process.exit(1);
+}
 
 // Basic filter as fallback
 const basicFilter = (message) => {
@@ -593,4 +606,5 @@ const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
     console.log('Chat filtering is ACTIVE using OpenAI GPT-4o-mini');
+    console.log('Environment:', process.env.NODE_ENV || 'development');
 });
