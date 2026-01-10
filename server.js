@@ -72,8 +72,8 @@ async function moderateMessage(message) {
     }
     
     try {
-        // Use the FREE gemini-1.5-flash model
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // Use the FREE gemini-pro model
+        const model = genAI.getGenerativeModel({ model: "gemini-pro" });
         
         const prompt = `Analyze this gaming chat message. Return ONLY "SAFE" or "UNSAFE" (no other text).
         
