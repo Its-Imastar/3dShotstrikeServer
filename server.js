@@ -49,46 +49,76 @@ try {
 
 // Basic filter with bad word list
 const basicFilter = (message) => {
-    // Normalize message to catch workarounds
+    // Advanced normalization to catch MORE workarounds
     const normalized = message.toLowerCase()
+        // Leetspeak
         .replace(/[@4]/g, 'a')
         .replace(/[8]/g, 'b')
         .replace(/[(<\[{]/g, 'c')
         .replace(/[3]/g, 'e')
-        .replace(/[!1|iíîïì]/g, 'i')
-        .replace(/[0oóôöò]/g, 'o')
+        .replace(/[!1|iíîïìĩī]/g, 'i')
+        .replace(/[0oóôöòõō]/g, 'o')
         .replace(/[$5]/g, 's')
         .replace(/[7+]/g, 't')
         .replace(/[µ]/g, 'u')
-        .replace(/[\s\-_\.•·,;:]/g, '')
-        .replace(/[àáâãäå]/g, 'a')
-        .replace(/[èéêë]/g, 'e')
-        .replace(/[ùúûü]/g, 'u')
+        // Remove ALL separators
+        .replace(/[\s\-_\.•·,;:'"]/g, '')
+        // Remove accents/diacritics
+        .replace(/[àáâãäåāăą]/g, 'a')
+        .replace(/[èéêëēĕėęě]/g, 'e')
+        .replace(/[ìíîïĩīĭįı]/g, 'i')
+        .replace(/[òóôõöōŏő]/g, 'o')
+        .replace(/[ùúûüũūŭůűų]/g, 'u')
+        .replace(/[ýÿ]/g, 'y')
+        .replace(/[ñ]/g, 'n')
+        .replace(/[ç]/g, 'c')
+        // Remove Cyrillic lookalikes
+        .replace(/[аӓ]/g, 'a')  // Cyrillic a
+        .replace(/[е]/g, 'e')   // Cyrillic e
+        .replace(/[і]/g, 'i')   // Cyrillic i
+        .replace(/[о]/g, 'o')   // Cyrillic o
+        .replace(/[с]/g, 'c')   // Cyrillic c
+        .replace(/[р]/g, 'p')   // Cyrillic p
+        .replace(/[х]/g, 'x')   // Cyrillic x
+        // Remove emoji/symbols
+        .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
+        .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
+        .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
+        .replace(/[\u{2600}-\u{26FF}]/gu, '')
         .replace(/[^\w]/g, '');
     
     // Critical words (always blocked) - VERY STRICT FOR KIDS
     const criticalWords = [
-        // All slurs
-        'nigger', 'faggot', 'retard', 'gay',
-        // Violence words
-        'kill', 'murder', 'die', 'death', 'blood', 'gun', 'knife', 'shoot', 'stab',
-        'rape', 'suicide', 'kys', 'killyourself', 'hurt', 'pain', 'torture',
-        // Inappropriate content
-        'sex', 'porn', 'xxx', 'naked', 'nude', 'penis', 'vagina', 'boobs', 'butt',
-        'pedo', 'pedophile', 'molest',
+        // Slurs
+        'nigger', 'nigga', 'nig', 'faggot', 'fag', 'retard', 'gay',
+        // Violence
+        'kill', 'murder', 'die', 'death', 'dead', 'blood', 'gun', 'knife', 'shoot', 'stab',
+        'rape', 'suicide', 'kys', 'killyourself', 'hurt', 'pain', 'torture', 'weapon',
+        // Coded workarounds kids use
+        'unalive', 'sewerslide', 'toasterbath', 'neckrope', 'aliven', 'die',
+        // Inappropriate
+        'sex', 'sexy', 'porn', 'xxx', 'naked', 'nude', 'penis', 'vagina', 'boobs', 'butt', 'booty',
+        'pedo', 'pedophile', 'molest', 'nsfw', 'corn', // "corn" = coded p*rn
         // Personal safety
-        'address', 'phone', 'email', 'meet', 'location', 'school', 'age', 'parent',
-        'discord', 'snap', 'snapchat', 'instagram', 'tiktok', 'whatsapp',
-        // Mean/bullying words (kids should be kind!)
-        'stupid', 'dumb', 'idiot', 'loser', 'ugly', 'fat', 'hate', 'sucks',
-        // Profanity
-        'fuck', 'shit', 'bitch', 'ass', 'damn', 'hell', 'crap', 'piss'
+        'address', 'phone', 'phonenumber', 'email', 'gmail', 'meet', 'meetup', 'location', 
+        'school', 'age', 'howold', 'parent', 'whereulive', 'city', 'state',
+        'discord', 'snap', 'snapchat', 'insta', 'instagram', 'tiktok', 'whatsapp', 'addme',
+        // Mean/bullying (kids should be kind!)
+        'stupid', 'dumb', 'idiot', 'moron', 'loser', 'ugly', 'fat', 'hate', 'sucks', 'trash',
+        // Profanity (all variations)
+        'fuck', 'fck', 'fuk', 'fvck', 'phuck',
+        'shit', 'sht', 'shyt', 
+        'bitch', 'btch', 'biatch',
+        'ass', 'arse', 'azz',
+        'damn', 'dang', 'darn',
+        'hell', 'heck',
+        'crap', 'piss'
     ];
     
-    // Combine critical words + file words
+    // Combine with file words
     const allBlockedWords = [...new Set([...criticalWords, ...blockedWordsFromFile])];
     
-    // Check blocked words
+    // Check each blocked word
     for (let word of allBlockedWords) {
         if (word.length > 2 && normalized.includes(word)) {
             console.log(`❌ Basic filter blocked: "${message}" → contains "${word}"`);
@@ -96,14 +126,22 @@ const basicFilter = (message) => {
         }
     }
     
-    // Personal info patterns
+    // Check for repeated character spam (bypassing normalization)
+    if (/(.)\1{4,}/.test(message)) {
+        console.log(`❌ Basic filter blocked: "${message}" → character spam`);
+        return false;
+    }
+    
+    // Personal info patterns (extra strict)
     const personalInfoPatterns = [
-        /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
-        /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,
-        /\b\d{5}(?:[-\s]\d{4})?\b/,
-        /\b\d{1,5}\s+\w+\s+(street|st|avenue|ave|road|rd)\b/i,
-        /\b(?:discord|snapchat|instagram|tiktok)\.gg\b/i,
-        /\b(?:www\.|http|\.com|\.net)\b/i
+        /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,                    // Phone
+        /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/, // Email
+        /\b\d{5}(?:[-\s]\d{4})?\b/,                        // Zip
+        /\b\d{1,5}\s+\w+\s+(street|st|ave|road|rd)\b/i,   // Address
+        /\b(?:discord|snap|insta|tiktok)\.gg\b/i,          // Social invites
+        /\b(?:www\.|http|\.com|\.net|\.org)\b/i,          // URLs
+        /\bim\s+\d{1,2}\b/i,                               // "im 12"
+        /\bi\s*am\s+\d{1,2}\s+(years?\s*old|yo|y\/o)\b/i  // "i am 12 years old"
     ];
     
     for (let pattern of personalInfoPatterns) {
