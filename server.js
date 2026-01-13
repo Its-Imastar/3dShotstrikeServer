@@ -72,14 +72,115 @@ const blockedSet = new Set(blockedWords);
 
 // Common bypass patterns to catch
 const BYPASS_PATTERNS = [
-    /f[\.\s\_\-]*[a4@][\.\s\_\-]*[ckq][\.\s\_\-]*[ckq7]/gi,
-    /s[\.\s\_\-]*[h4#][\.\s\_\-]*[i1l!][\.\s\_\-]*[t7+]/gi,
-    /[a4@][\.\s\_\-]*[sz5\$][\.\s\_\-]*[sz5\$]/gi,
-    /b[\.\s\_\-]*[i1l!][\.\s\_\-]*[t7+][\.\s\_\-]*[ch4#]/gi,
-    /d[\.\s\_\-]*[a4@][\.\s\_\-]*[mn][\.\s\_\-]*[mn]/gi,
-    /ph[ckq]/gi,
-    /\b([a-z])\1{3,}\b/gi, // 4+ repeated letters
-    /(.)\1{4,}/g // 5+ repeated characters
+    // PROFANITY: f*ck variations
+    /f[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[ckq7ĸķκϰ+†]/gi,
+    /f[\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[ckq7ĸķκϰ+†]/gi,
+    /ph[ckqĸķκϰ][ckqĸķκϰ]?/gi,
+    /f[uv][ckq]/gi,  // fvck, fvq
+    /f[a4][gq][ckq]/gi, // fag, faq
+    /f[ckq]{2,}/gi, // fkk, fcc, fqq
+    
+    // PROFANITY: sh*t variations
+    /s[\.\s\_\-]*[h4#ħĥη][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[t7+†τ]/gi,
+    /s[\.\s\_\-]*[h4#ħĥη][\.\s\_\-]*[i1l!|íìîïīΙł]*[\.\s\_\-]*[t7+†τ]/gi, // sh*t, sht
+    /s[ckq][h4#]?[i1l!]?[t7+]/gi, // sht, scht, sciht
+    /s[cz5][h4#]?[i1l!]?[t7+]/gi, // sziht
+    
+    // PROFANITY: a** variations
+    /[a4@áàâäãåαΔΛ][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[sz5$§ßšşzžζ]/gi,
+    /[a4@][rЯ][sz5$]?[e3]?/gi, // arse, ars
+    /[a4@]zz/gi, // azz
+    
+    // PROFANITY: b*tch variations
+    /b[\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[t7+†τ][\.\s\_\-]*[ch4#ċĉčçς]/gi,
+    /b[\.\s\_\-]*[i1l!|][\.\s\_\-]*[t7+][\.\s\_\-]*[ch4#][\.\s\_\-]*[h4#]?/gi, // bi7ch, b1tch
+    /b[uy][t7][ch4#]/gi, // bytch, butch
+    /b[uv][i1l!][t7][ch4#]/gi, // bvitch
+    
+    // PROFANITY: d*mn variations
+    /d[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[mnмηñ][\.\s\_\-]*[mnмηñ]/gi,
+    /d[\.\s\_\-]*[a4@][\.\s\_\-]*[mn][\.\s\_\-]*[nb8]?/gi, // damn, damb
+    /d[ae3][mn][mn]?[i1l!]?[t7]?/gi, // demn, demnit
+    
+    // PROFANITY: Other common words
+    /[ckq][\.\s\_\-]*[o0°óòôöõōΩθ][\.\s\_\-]*[ckqĸķκϰ]/gi, // c*ck
+    /p[\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[yγλ]/gi, // p*ssy
+    /[ckq][\.\s\_\-]*[o0°óòôöõōΩθ][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[kqĸķκϰ]/gi, // c*cksucker
+    /[dt7][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[ckqĸķκϰ]/gi, // d*ck
+    /r[\.\s\_\-]*[e3€£ëèéêēΣ][\.\s\_\-]*[t7+†τ][\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[rЯ][\.\s\_\-]*[dδ]/gi, // r*tard
+    
+    // SLURS & HATE SPEECH
+    /[mn][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[g6ğģǥ][\.\s\_\-]*[g6ğģǥ][\.\s\_\-]*[e3€£ëèéêēΣ][\.\s\_\-]*[rЯ]/gi, // n*gger
+    /[mn][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[g6ğģǥ][g6ğģǥ]?[a4@]?[rЯ]?/gi, // nigga, nigg
+    /[mn][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[bp8][\.\s\_\-]*[bp8]?/gi, // nibba
+    /f[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[g6ğģǥ]/gi, // f*g
+    /[wv][\.\s\_\-]*[h4#ħĥη][\.\s\_\-]*[o0°óòôöõōΩθ][\.\s\_\-]*[rЯ][\.\s\_\-]*[e3€£ëèéêēΣ]/gi, // wh*re
+    /[sz5$§ßšşzžζ][\.\s\_\-]*[l1|ł][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[t7+†τ]/gi, // sl*t
+    /[ckq][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[mnмηñ][\.\s\_\-]*[t7+†τ]/gi, // c*nt
+    
+    // VIOLENT/HARMFUL CONTENT
+    /[kg6][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[l1|ł][\.\s\_\-]*[l1|ł]/gi, // k*ll
+    /[sz5$§ßšşzžζ][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[dδ]/gi, // su*cide
+    /[dδ][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[e3€£ëèéêēΣ]/gi, // d*e
+    /r[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[pρπ][\.\s\_\-]*[e3€£ëèéêēΣ]/gi, // r*pe
+    /[h4#ħĥη][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[t7+†τ]/gi, // h*t
+    
+    // BYPASS TECHNIQUES
+    /\b([a-z])\1{2,}\b/gi, // 3+ repeated letters (aaa, bbb)
+    /([a-z])\1{4,}/gi, // 5+ repeated characters anywhere
+    /(\w)\1\.\1/gi, // a.a (dot separation)
+    /(\w)-\1-\1/gi, // a-a-a (dash separation)
+    /(\w)\s+\1\s+\1/gi, // a a a (space separation)
+    
+    // CHARACTER FLOODING
+    /([a-z])\1{2,}([a-z])\2{2,}/gi, // aaabbb (combined repeats)
+    /[a-z]{15,}/gi, // Very long single "word"
+    
+    // MIXED BYPASS PATTERNS
+    /[a-z][0-9][a-z][0-9]/gi, // a1b2 (alternating)
+    /[0-9][a-z][0-9][a-z]/gi, // 1a2b
+    /[a-z]+[0-9]+[a-z]+/gi, // abc123def
+    /[0-9]+[a-z]+[0-9]+/gi, // 123abc456
+    
+    // HOMOGLYPH ATTACKS
+    /[a4@][5$][5$]/gi, // a$$ (using similar characters)
+    /[5$][h4#][i1l!][t7]/gi, // $hit
+    /[f][0o][ckq]/gi, // f0ck
+    /[5$][ckq][uμ][mkм]/gi, // $cum
+    
+    // PHONETIC BYPASSES
+    /ph[au4][ckq]/gi, // phack, phuck
+    /[ckq][o0][ckq]/gi, // cock, kock
+    /[sz5][e3][ckq][sz5]/gi, // secs, seks
+    /[sz5][e3][xχ]/gi, // sex
+    /[ckq][o0][o0][l1][e3]/gi, // coole
+    
+    // SPLIT WORD PATTERNS (more comprehensive)
+    /(?:f|ph)(?:\s*[\.\-\_\*]?\s*)(?:u|4|a)(?:\s*[\.\-\_\*]?\s*)(?:c|k|q|7)(?:\s*[\.\-\_\*]?\s*)(?:c|k|q|7)/gi,
+    /(?:s|5|\$)(?:\s*[\.\-\_\*]?\s*)(?:h|4|\#)(?:\s*[\.\-\_\*]?\s*)(?:i|1|\!|\|)(?:\s*[\.\-\_\*]?\s*)(?:t|7|\+)/gi,
+    
+    // REVERSED/INVERTED WORDS
+    /[ckq7][ckq7]?[a4@][ufvμ]/gi, // kcuf, cuf (fuck reversed)
+    /[t7+][i1l!][h4#][sz5\$]/gi, // tihs (shit reversed)
+    
+    // DOUBLE/TANDEM BYPASS
+    /(?:fuck|shit|ass|bitch).*?(?:fuck|shit|ass|bitch)/gi, // Multiple in same message
+    
+    // CAMEL CASE BYPASS
+    /[A-Z][a-z]*[A-Z][a-z]*[A-Z]/g, // FuCk, ShIt
+    
+    // LEETSPEAK NUMERIC REPLACEMENT
+    /[a-z]*[0-9]{2,}[a-z]*/gi, // Words with number clusters
+    /[0-9][a-z]{2,}[0-9]/gi, // Numbers sandwiching letters
+    
+    // ZALGO/UNICODE ABUSE
+    /[a-z][\u0300-\u036F]{2,}[a-z]/gi, // Characters with combining marks
+    /\p{Mark}{3,}/gu, // Excessive diacritics
+    
+    // VISUAL SIMILARITY (looks like words)
+    /|\\|\|\|/gi, // || (looks like II)
+    /[|!1][vV][|!1]/gi, // |V| (looks like M)
+    /[l1][o0][l1]/gi, // lol but with numbers
 ];
 
 // Personal information patterns
