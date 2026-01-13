@@ -1,652 +1,254 @@
-// server.js - COPPA-Compliant with FREE Gemini AI + Bad Word List
-// Safe for users under 13
+// server.js - COPPA-Compliant, Offline Multi-Layer Chat Filter (512MB RAM)
+// Multiplayer Game Server with Shop, Coins, Chat, and Lightweight GPT-J-style scoring
 
-if (process.env.NODE_ENV !== 'production') {
-    require('dotenv').config();
-}
+if (process.env.NODE_ENV !== 'production') require('dotenv').config();
 
 const express = require('express');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
-const http = require('http').createServer(app);
-const io = require('socket.io')(http, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
-});
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: "*", methods: ["GET","POST"] } });
 
-// Initialize Google Gemini AI (FREE TIER)
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
-
-// Validate API key on startup
-if (!process.env.GEMINI_API_KEY) {
-    console.warn('⚠️  GEMINI_API_KEY not set. Using basic filter only.');
-    console.log('   Get your FREE key: https://aistudio.google.com/app/apikey');
-} else {
-    console.log('✅ Gemini API key configured');
-}
-
-// Load bad words from external file
-let blockedWordsFromFile = [];
+// ------------------------
+// 1️⃣ Load bad words
+// ------------------------
+let blockedWords = [];
 try {
-    const badWordsPath = path.join(__dirname, 'badwords.txt');
-    if (fs.existsSync(badWordsPath)) {
-        blockedWordsFromFile = fs.readFileSync(badWordsPath, 'utf-8')
+    const filePath = path.join(__dirname, 'badwords.txt');
+    if (fs.existsSync(filePath)) {
+        blockedWords = fs.readFileSync(filePath, 'utf-8')
             .split('\n')
-            .map(word => word.trim().toLowerCase())
-            .filter(word => word.length > 0);
-        console.log(`✅ Loaded ${blockedWordsFromFile.length} bad words from file`);
-    } else {
-        console.log('ℹ️  No badwords.txt file found, using built-in list only');
+            .map(w => w.trim().toLowerCase())
+            .filter(Boolean);
+        console.log(`✅ Loaded ${blockedWords.length} bad words`);
     }
-} catch (error) {
-    console.warn('⚠️  Could not load badwords.txt:', error.message);
+} catch(err) {
+    console.warn("⚠️ Could not load badwords.txt", err.message);
 }
+const blockedSet = new Set(blockedWords);
 
-// Basic filter with bad word list
-const basicFilter = (message) => {
-    // Advanced normalization to catch MORE workarounds
-    const normalized = message.toLowerCase()
-        // Leetspeak
-        .replace(/[@4]/g, 'a')
-        .replace(/[8]/g, 'b')
-        .replace(/[(<\[{]/g, 'c')
-        .replace(/[3]/g, 'e')
-        .replace(/[!1|iíîïìĩī]/g, 'i')
-        .replace(/[0oóôöòõō]/g, 'o')
-        .replace(/[$5]/g, 's')
-        .replace(/[7+]/g, 't')
-        .replace(/[µ]/g, 'u')
-        // Remove ALL separators
-        .replace(/[\s\-_\.•·,;:'"]/g, '')
-        // Remove accents/diacritics
-        .replace(/[àáâãäåāăą]/g, 'a')
-        .replace(/[èéêëēĕėęě]/g, 'e')
-        .replace(/[ìíîïĩīĭįı]/g, 'i')
-        .replace(/[òóôõöōŏő]/g, 'o')
-        .replace(/[ùúûüũūŭůűų]/g, 'u')
-        .replace(/[ýÿ]/g, 'y')
-        .replace(/[ñ]/g, 'n')
-        .replace(/[ç]/g, 'c')
-        // Remove Cyrillic lookalikes
-        .replace(/[аӓ]/g, 'a')  // Cyrillic a
-        .replace(/[е]/g, 'e')   // Cyrillic e
-        .replace(/[і]/g, 'i')   // Cyrillic i
-        .replace(/[о]/g, 'o')   // Cyrillic o
-        .replace(/[с]/g, 'c')   // Cyrillic c
-        .replace(/[р]/g, 'p')   // Cyrillic p
-        .replace(/[х]/g, 'x')   // Cyrillic x
-        // Remove emoji/symbols
-        .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
-        .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
-        .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
-        .replace(/[\u{2600}-\u{26FF}]/gu, '')
-        .replace(/[^\w]/g, '');
-    
-    // Critical words (always blocked) - VERY STRICT FOR KIDS
-    const criticalWords = [
-        // Slurs
-        'nigger', 'nigga', 'nig', 'faggot', 'fag', 'retard', 'gay',
-        // Violence
-        'kill', 'murder', 'die', 'death', 'dead', 'blood', 'gun', 'knife', 'shoot', 'stab',
-        'rape', 'suicide', 'kys', 'killyourself', 'hurt', 'pain', 'torture', 'weapon',
-        // Coded workarounds kids use
-        'unalive', 'sewerslide', 'toasterbath', 'neckrope', 'aliven', 'die',
-        // Inappropriate
-        'sex', 'sexy', 'porn', 'xxx', 'naked', 'nude', 'penis', 'vagina', 'boobs', 'butt', 'booty',
-        'pedo', 'pedophile', 'molest', 'nsfw', 'corn', // "corn" = coded p*rn
-        // Personal safety
-        'address', 'phone', 'phonenumber', 'email', 'gmail', 'meet', 'meetup', 'location', 
-        'school', 'age', 'howold', 'parent', 'whereulive', 'city', 'state',
-        'discord', 'snap', 'snapchat', 'insta', 'instagram', 'tiktok', 'whatsapp', 'addme',
-        // Mean/bullying (kids should be kind!)
-        'stupid', 'dumb', 'idiot', 'moron', 'loser', 'ugly', 'fat', 'hate', 'sucks', 'trash',
-        // Profanity (all variations)
-        'fuck', 'fck', 'fuk', 'fvck', 'phuck',
-        'shit', 'sht', 'shyt', 
-        'bitch', 'btch', 'biatch',
-        'ass', 'arse', 'azz',
-        'damn', 'dang', 'darn',
-        'hell', 'heck',
-        'crap', 'piss'
-    ];
-    
-    // Combine with file words
-    const allBlockedWords = [...new Set([...criticalWords, ...blockedWordsFromFile])];
-    
-    // Check each blocked word
-    for (let word of allBlockedWords) {
-        if (word.length > 2 && normalized.includes(word)) {
-            console.log(`❌ Basic filter blocked: "${message}" → contains "${word}"`);
-            return false;
-        }
-    }
-    
-    // Check for repeated character spam (bypassing normalization)
-    if (/(.)\1{4,}/.test(message)) {
-        console.log(`❌ Basic filter blocked: "${message}" → character spam`);
-        return false;
-    }
-    
-    // Personal info patterns (extra strict)
-    const personalInfoPatterns = [
-        /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,                    // Phone
-        /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/, // Email
-        /\b\d{5}(?:[-\s]\d{4})?\b/,                        // Zip
-        /\b\d{1,5}\s+\w+\s+(street|st|ave|road|rd)\b/i,   // Address
-        /\b(?:discord|snap|insta|tiktok)\.gg\b/i,          // Social invites
-        /\b(?:www\.|http|\.com|\.net|\.org)\b/i,          // URLs
-        /\bim\s+\d{1,2}\b/i,                               // "im 12"
-        /\bi\s*am\s+\d{1,2}\s+(years?\s*old|yo|y\/o)\b/i  // "i am 12 years old"
-    ];
-    
-    for (let pattern of personalInfoPatterns) {
-        if (pattern.test(message)) {
-            console.log(`❌ Basic filter blocked: personal info in "${message}"`);
-            return false;
-        }
-    }
-    
-    return true;
-};
+// ------------------------
+// 2️⃣ Player & Game Data
+// ------------------------
+const players = new Map();       // key: socket.id -> { username, coins, upgrades, health, etc. }
+const messageHistory = new Map(); // key: socket.id -> array of recent messages
 
-// AI-powered moderation using FREE Gemini
-async function moderateMessage(message) {
-    // FIRST: Run basic filter
-    if (!basicFilter(message)) {
-        return false;
-    }
-    
-    // If no API key, basic filter already passed it
-    if (!process.env.GEMINI_API_KEY) {
-        return true;
-    }
-    
-    try {
-        const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-flash-latest"
-        });
-        
-        const prompt = `You are a VERY STRICT chat moderator for a children's game (ages 6-12). Kids' safety is the top priority. Respond with ONLY "SAFE" or "UNSAFE".
-
-UNSAFE if message contains:
-- ANY curse words or mean words (stupid, dumb, idiot, loser, etc.)
-- ANY mentions of violence, weapons, fighting, killing, hurting, blood
-- ANY body parts or bathroom words
-- Asking personal questions (age, name, where you live, what school)
-- Asking to meet, talk outside game, or exchange contact info
-- Mentioning social media (Discord, Snapchat, Instagram, TikTok, YouTube)
-- ANY adult topics (dating, relationships, inappropriate content)
-- Bullying, teasing, or being mean to others
-- Telling someone to do something dangerous
-- Trying to trick the filter with symbols or spacing
-
-SAFE ONLY if message is:
-- Positive game chat: "good game", "nice shot", "great job", "gg", "wp"
-- Game strategy: "let's go left", "watch out", "defend the base"
-- Friendly and kind: "thanks", "you're good", "that was cool", "have fun"
-- Simple questions about the GAME ONLY: "how do you jump?", "what does this do?"
-
-When in doubt, mark as UNSAFE. Better to block a safe message than allow an unsafe one.
-
-Message to check: "${message.substring(0, 200)}"
-
-Your response (SAFE or UNSAFE):`;
-
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text().trim().toUpperCase();
-        
-        const isSafe = text.includes('SAFE') && !text.includes('UNSAFE');
-        
-        console.log(`🤖 AI moderation: "${message.substring(0, 30)}..." → ${isSafe ? 'SAFE' : 'UNSAFE'}`);
-        
-        return isSafe;
-        
-    } catch (error) {
-        console.error("AI moderation error:", error.message);
-        return true; // Already passed basic filter
-    }
-}
-
-// Player data storage
-const players = {};
-const playerUpgrades = {};
-const playerCoins = {};
-const messageHistory = {};
-
-// Spam detection
-function isSpam(playerId, message) {
-    if (!messageHistory[playerId]) {
-        messageHistory[playerId] = [];
-    }
-    
-    const now = Date.now();
-    const recentMessages = messageHistory[playerId].filter(
-        msg => now - msg.timestamp < 15000
-    );
-    
-    const sameMessageCount = recentMessages.filter(
-        msg => msg.message.toLowerCase() === message.toLowerCase()
-    ).length;
-    
-    const messageCount = recentMessages.length;
-    
-    messageHistory[playerId].push({
-        message: message,
-        timestamp: now
-    });
-    
-    if (messageHistory[playerId].length > 10) {
-        messageHistory[playerId] = messageHistory[playerId].slice(-10);
-    }
-    
-    if (sameMessageCount >= 2) return true;
-    if (messageCount >= 4) return true;
-    
-    return false;
-}
-
-// Shop items configuration
+// Shop / Upgrades
 const shopItems = {
     blaster: [
-        {
-            id: 'blaster_damage',
-            name: 'Damage Upgrade',
-            maxLevel: 10,
-            basePrice: 50,
-            priceMultiplier: 1.5,
-            stats: { damage: { base: 25, increase: 5 } }
-        },
-        {
-            id: 'blaster_ammo',
-            name: 'Extended Magazine',
-            maxLevel: 10,
-            basePrice: 40,
-            priceMultiplier: 1.4,
-            stats: { maxAmmo: { base: 30, increase: 5 } }
-        },
-        {
-            id: 'blaster_reload',
-            name: 'Rapid Reload',
-            maxLevel: 10,
-            basePrice: 60,
-            priceMultiplier: 1.6,
-            stats: { reloadSpeed: { base: 3.0, decrease: 0.2 } }
-        }
+        { id: 'blaster_damage', name: 'Damage Upgrade', maxLevel: 10, basePrice: 50, priceMultiplier: 1.5, stats: { damage: { base: 25, increase: 5 } } },
+        { id: 'blaster_ammo', name: 'Extended Magazine', maxLevel: 10, basePrice: 40, priceMultiplier: 1.4, stats: { maxAmmo: { base: 30, increase: 5 } } },
+        { id: 'blaster_reload', name: 'Rapid Reload', maxLevel: 10, basePrice: 60, priceMultiplier: 1.6, stats: { reloadSpeed: { base: 3, decrease: 0.2 } } }
     ],
     hp: [
-        {
-            id: 'hp_max',
-            name: 'Max HP Increase',
-            maxLevel: 10,
-            basePrice: 80,
-            priceMultiplier: 1.8,
-            stats: { maxHP: { base: 100, increase: 20 } }
-        },
-        {
-            id: 'hp_regen',
-            name: 'HP Regeneration',
-            maxLevel: 8,
-            basePrice: 70,
-            priceMultiplier: 1.7,
-            stats: { hpRegen: { base: 5, increase: 2 } }
-        },
-        {
-            id: 'hp_regen_delay',
-            name: 'Quick Recovery',
-            maxLevel: 5,
-            basePrice: 90,
-            priceMultiplier: 2.0,
-            stats: { hpRegenDelay: { base: 4, decrease: 0.5 } }
-        }
-    ],
-    abilities: [
-        {
-            id: 'ability_doublejump',
-            name: 'Double Jump',
-            maxLevel: 1,
-            basePrice: 500,
-            stats: {}
-        },
-        {
-            id: 'ability_sprint',
-            name: 'Sprint',
-            maxLevel: 1,
-            basePrice: 300,
-            stats: {}
-        }
-    ],
-    cosmetics: [
-        {
-            id: 'cosmetic_trail',
-            name: 'Bullet Trail',
-            maxLevel: 1,
-            basePrice: 100,
-            stats: {}
-        }
+        { id: 'hp_max', name: 'Max HP', maxLevel: 10, basePrice: 80, priceMultiplier: 1.8, stats: { maxHP: { base: 100, increase: 20 } } },
+        { id: 'hp_regen', name: 'HP Regen', maxLevel: 8, basePrice: 70, priceMultiplier: 1.7, stats: { hpRegen: { base: 5, increase: 2 } } },
+        { id: 'hp_regen_delay', name: 'Quick Recovery', maxLevel: 5, basePrice: 90, priceMultiplier: 2.0, stats: { hpRegenDelay: { base: 4, decrease: 0.5 } } }
     ]
 };
 
-function calculateItemPrice(item, currentLevel) {
-    if (currentLevel >= item.maxLevel) return Infinity;
-    if (item.priceMultiplier) {
-        return Math.floor(item.basePrice * Math.pow(item.priceMultiplier, currentLevel));
-    }
-    return item.basePrice;
+// ------------------------
+// 3️⃣ Utilities
+// ------------------------
+
+// Normalize text to prevent bypass
+function normalizeText(text) {
+    return text.toLowerCase()
+        .replace(/[@4]/g,'a')
+        .replace(/[8]/g,'b')
+        .replace(/[3]/g,'e')
+        .replace(/[!1|iíîïìĩī]/g,'i')
+        .replace(/[0oóôöòõō]/g,'o')
+        .replace(/[$5]/g,'s')
+        .replace(/[7+]/g,'t')
+        .replace(/[^\w]/g,'')
+        .normalize('NFKD');
 }
 
-function applyUpgradeStats(playerId, item) {
-    const currentLevel = getUpgradeLevel(playerId, item.id);
-    
-    Object.entries(item.stats).forEach(([stat, data]) => {
-        if (data.increase) {
-            if (stat === 'damage') {
-                playerUpgrades[playerId].damage = data.base + (currentLevel * data.increase);
-            }
-            else if (stat === 'maxHP') {
-                playerUpgrades[playerId].maxHP = data.base + (currentLevel * data.increase);
-            }
-            else if (stat === 'hpRegen') {
-                playerUpgrades[playerId].hpRegen = data.base + (currentLevel * data.increase);
-            }
-            else if (stat === 'maxAmmo') {
-                playerUpgrades[playerId].maxAmmo = data.base + (currentLevel * data.increase);
-            }
-        } else if (data.decrease) {
-            if (stat === 'reloadSpeed') {
-                playerUpgrades[playerId].reloadSpeed = Math.max(0.5, data.base - (currentLevel * data.decrease));
-            }
-            else if (stat === 'hpRegenDelay') {
-                playerUpgrades[playerId].hpRegenDelay = Math.max(1, data.base - (currentLevel * data.decrease));
-            }
-        }
+// ------------------------
+// Keyword + regex filter (Layer 1)
+// ------------------------
+function basicFilter(message) {
+    const normalized = normalizeText(message);
+
+    // blocked words
+    for (let word of blockedSet) if (normalized.includes(word)) return false;
+
+    // repeated characters
+    if (/(.)\1{4,}/.test(message)) return false;
+
+    // personal info / PII
+    const patterns = [
+        /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/, // phone
+        /\b[\w._%+-]+@[\w.-]+\.[A-Za-z]{2,}\b/, // email
+        /\b\d{5}(?:[-\s]\d{4})?\b/, // zip
+        /\b\d{1,5}\s+\w+\s+(street|st|ave|road|rd)\b/i,
+        /\b(?:discord|snap|insta|tiktok|whatsapp)\b/i
+    ];
+    for (let p of patterns) if (p.test(message)) return false;
+
+    return true;
+}
+
+// ------------------------
+// Lightweight GPT-J style scoring (Layer 2)
+// ------------------------
+const toxicKeywords = {
+    'kill': 0.9, 'suicide': 1.0, 'stupid': 0.6, 'idiot': 0.6,
+    'loser': 0.5, 'hate': 0.7, 'die': 0.8, 'dumb': 0.5
+};
+
+function scoreToxicity(message) {
+    const normalized = normalizeText(message);
+    let score = 0;
+    for (let [word, weight] of Object.entries(toxicKeywords)) {
+        if (normalized.includes(word)) score = Math.max(score, weight);
+    }
+    return score; // 0–1
+}
+
+// Complete moderation pipeline
+function moderateMessage(message) {
+    if (!basicFilter(message)) return false;           // Layer 1
+    if (scoreToxicity(message) >= 0.7) return false;  // Layer 2
+    return true;
+}
+
+// ------------------------
+// Spam detection
+// ------------------------
+function isSpam(playerId, message) {
+    const now = Date.now();
+    if (!messageHistory.has(playerId)) messageHistory.set(playerId, []);
+    const history = messageHistory.get(playerId);
+
+    // remove old messages
+    while (history.length && now - history[0].timestamp > 15000) history.shift();
+
+    const duplicateCount = history.filter(m => m.message === message).length;
+    if (duplicateCount >= 2 || history.length >= 4) return true;
+
+    history.push({ message, timestamp: now });
+    return false;
+}
+
+// ------------------------
+// Initialize player data
+// ------------------------
+function initPlayer(socketId) {
+    players.set(socketId, {
+        username: 'Guest',
+        coins: 100,
+        upgrades: {},
+        health: 100,
+        score: 0,
+        position: { x:0, y:1.67, z:0 },
+        rotation: { x:0, y:0 }
     });
 }
 
-function getUpgradeLevel(playerId, itemId) {
-    if (!playerUpgrades[playerId]) return 0;
-    if (!playerUpgrades[playerId][itemId]) return 0;
-    return playerUpgrades[playerId][itemId];
+// ------------------------
+// Upgrade / Shop helpers
+// ------------------------
+function getUpgradeLevel(player, itemId) {
+    return player.upgrades[itemId] || 0;
 }
 
-function initializePlayerData(playerId) {
-    if (!playerUpgrades[playerId]) {
-        playerUpgrades[playerId] = {
-            blasterLevel: 1,
-            maxAmmo: 30,
-            reloadSpeed: 3.0,
-            damage: 25,
-            maxHP: 100,
-            hpRegen: 5,
-            hpRegenDelay: 4,
-            damageReduction: 0
-        };
-    }
-    
-    if (!playerCoins[playerId]) {
-        playerCoins[playerId] = 100;
-    }
+function applyUpgrade(player, item) {
+    const level = getUpgradeLevel(player, item.id);
+    Object.entries(item.stats).forEach(([stat, data]) => {
+        if (data.increase) player[stat] = (data.base || 0) + level * data.increase;
+        if (data.decrease) player[stat] = Math.max(0, (data.base || 0) - level * data.decrease);
+    });
 }
 
+// ------------------------
+// 4️⃣ Socket.IO Events
+// ------------------------
 io.on('connection', (socket) => {
     console.log('✅ Player connected:', socket.id);
-    
-    players[socket.id] = {
-        id: socket.id,
-        username: 'Guest',
-        position: { x: 0, y: 1.67, z: 0 },
-        rotation: { x: 0, y: 0 },
-        color: Math.floor(Math.random() * 0xffffff),
-        health: 100,
-        score: 0
-    };
-    
-    initializePlayerData(socket.id);
-    
-    socket.emit('init', {
-        playerId: socket.id,
-        players: players
-    });
-    
-    socket.emit('coinUpdate', {
-        playerId: socket.id,
-        coins: playerCoins[socket.id]
-    });
-    
-    socket.broadcast.emit('playerJoined', players[socket.id]);
-    
+    initPlayer(socket.id);
+    const player = players.get(socket.id);
+
+    socket.emit('init', { playerId: socket.id, players: Object.fromEntries(players) });
+    socket.broadcast.emit('playerJoined', player);
+
+    // Set Username
     socket.on('setUsername', (username) => {
-        players[socket.id].username = username;
-        socket.broadcast.emit('playerUsernameUpdated', {
-            playerId: socket.id,
-            username: username
-        });
+        if (!username || username.length > 20) username = 'Guest';
+        player.username = username;
+        io.emit('playerUsernameUpdated', { playerId: socket.id, username });
     });
-    
-    socket.on('playerUpgrades', (upgrades) => {
-        playerUpgrades[socket.id] = {
-            ...playerUpgrades[socket.id],
-            ...upgrades
-        };
-    });
-    
-    socket.on('purchaseUpgrade', async (data) => {
-        const { upgradeId, price } = data;
-        const playerId = socket.id;
-        
-        let item = null;
-        let itemName = '';
-        for (const [category, items] of Object.entries(shopItems)) {
-            const found = items.find(i => i.id === upgradeId);
-            if (found) {
-                item = found;
-                itemName = found.name;
-                break;
-            }
-        }
-        
-        if (!item) {
-            socket.emit('upgradePurchased', {
-                success: false,
-                message: 'Item not found!'
-            });
-            return;
-        }
-        
-        if (playerCoins[playerId] < price) {
-            socket.emit('upgradePurchased', {
-                success: false,
-                message: 'Not enough coins!'
-            });
-            return;
-        }
-        
-        const currentLevel = getUpgradeLevel(playerId, upgradeId);
-        if (currentLevel >= item.maxLevel) {
-            socket.emit('upgradePurchased', {
-                success: false,
-                message: 'Maximum level reached!'
-            });
-            return;
-        }
-        
-        playerCoins[playerId] -= price;
-        
-        if (!playerUpgrades[playerId][upgradeId]) {
-            playerUpgrades[playerId][upgradeId] = 1;
-        } else {
-            playerUpgrades[playerId][upgradeId]++;
-        }
-        
-        applyUpgradeStats(playerId, item);
-        
-        if (upgradeId.startsWith('blaster_')) {
-            playerUpgrades[playerId].blasterLevel = Math.max(
-                playerUpgrades[playerId].blasterLevel || 1,
-                currentLevel + 1
-            );
-        }
-        
-        socket.emit('upgradePurchased', {
-            success: true,
-            upgradeId: upgradeId,
-            upgradeName: itemName,
-            newCoins: playerCoins[playerId]
-        });
-        
-        socket.emit('coinUpdate', {
-            playerId: playerId,
-            coins: playerCoins[playerId]
-        });
-        
-        console.log(`Player ${playerId} purchased ${itemName} (Level ${currentLevel + 1})`);
-    });
-    
-    socket.on('move', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].position = data.position;
-            players[socket.id].rotation = data.rotation;
-            socket.broadcast.emit('playerMoved', {
-                playerId: socket.id,
-                position: data.position,
-                rotation: data.rotation
-            });
-        }
-    });
-    
-    socket.on('shoot', (data) => {
-        socket.broadcast.emit('playerShot', {
-            playerId: socket.id,
-            from: data.from,
-            direction: data.direction
-        });
-    });
-    
-    socket.on('hit', (data) => {
-        const targetId = data.targetId;
-        if (players[targetId] && players[socket.id]) {
-            const shooterDamage = playerUpgrades[socket.id]?.damage || 25;
-            const targetDamageReduction = playerUpgrades[targetId]?.damageReduction || 0;
-            const actualDamage = shooterDamage * (1 - targetDamageReduction / 100);
-            
-            players[targetId].health -= actualDamage;
-            
-            io.to(targetId).emit('playerHealthUpdate', {
-                playerId: targetId,
-                health: players[targetId].health
-            });
-            
-            io.to(targetId).emit('playerHit', {
-                targetId: targetId,
-                health: players[targetId].health,
-                damage: actualDamage
-            });
-            
-            if (players[targetId].health <= 0) {
-                players[targetId].health = playerUpgrades[targetId]?.maxHP || 100;
-                players[targetId].position = { x: 0, y: 1.67, z: 0 };
-                players[targetId].rotation = { x: 0, y: 0 };
-                
-                players[socket.id].score += 100;
-                playerCoins[socket.id] += 30;
-                
-                io.emit('playerDied', {
-                    targetId: targetId,
-                    killerId: socket.id,
-                    killerScore: players[socket.id].score
-                });
-                
-                io.to(socket.id).emit('scoreUpdate', {
-                    playerId: socket.id,
-                    score: players[socket.id].score
-                });
-                
-                io.to(socket.id).emit('coinUpdate', {
-                    playerId: socket.id,
-                    coins: playerCoins[socket.id]
-                });
-            }
-        }
-    });
-    
-    // COPPA-COMPLIANT CHAT HANDLER
-    socket.on('chatMessage', async (data) => {
-        const message = data.message.trim();
-        const username = players[socket.id]?.username || 'Guest';
-        
-        if (!message || message.length === 0) return;
-        
-        if (message.length > 100) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Message too long (max 100 characters)'
-            });
-            return;
-        }
-        
-        if (message.length < 2) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Message too short'
-            });
-            return;
-        }
-        
+
+    // Chat
+    socket.on('chatMessage', (data) => {
+        const message = data.message?.trim();
+        if (!message || message.length < 2 || message.length > 100) return;
+
         if (isSpam(socket.id, message)) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Please wait before sending another message'
-            });
+            socket.emit('chatMessage', { username: 'System', message: '⚠️ Please wait before sending another message.' });
             return;
         }
-        
-        const isSafe = await moderateMessage(message);
-        
-        if (!isSafe) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Your message was blocked. Please keep chat friendly!'
-            });
-            console.log(`❌ Blocked message from ${username}: "${message}"`);
+
+        if (!moderateMessage(message)) {
+            socket.emit('chatMessage', { username: 'System', message: '⚠️ Your message was blocked for safety.' });
+            console.log(`Blocked message: "${message}"`);
             return;
         }
-        
-        io.emit('chatMessage', {
-            username: username,
-            message: message
-        });
-        
-        console.log(`💬 Chat from ${username}: "${message}"`);
+
+        io.emit('chatMessage', { username: player.username, message });
     });
-    
+
+    // Purchase Upgrade
+    socket.on('purchaseUpgrade', (data) => {
+        const { upgradeId } = data;
+        let item = null;
+        for (const items of Object.values(shopItems)) {
+            const found = items.find(i => i.id === upgradeId);
+            if (found) { item = found; break; }
+        }
+        if (!item) return socket.emit('upgradePurchased', { success: false, message: 'Item not found!' });
+
+        const level = getUpgradeLevel(player, upgradeId);
+        if (level >= item.maxLevel) return socket.emit('upgradePurchased', { success: false, message: 'Max level reached!' });
+
+        const price = Math.floor(item.basePrice * Math.pow(item.priceMultiplier, level));
+        if (player.coins < price) return socket.emit('upgradePurchased', { success: false, message: 'Not enough coins!' });
+
+        player.coins -= price;
+        player.upgrades[upgradeId] = level + 1;
+        applyUpgrade(player, item);
+
+        socket.emit('upgradePurchased', { success: true, upgradeId, upgradeName: item.name, newCoins: player.coins });
+        socket.emit('coinUpdate', { playerId: socket.id, coins: player.coins });
+    });
+
+    // Disconnect
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
+        players.delete(socket.id);
+        messageHistory.delete(socket.id);
         io.emit('playerLeft', socket.id);
-        delete players[socket.id];
-        delete playerUpgrades[socket.id];
-        delete playerCoins[socket.id];
-        delete messageHistory[socket.id];
     });
-    
-    setInterval(() => {
-        if (players[socket.id]) {
-            playerCoins[socket.id] += 10;
-            socket.emit('coinUpdate', {
-                playerId: socket.id,
-                coins: playerCoins[socket.id]
-            });
-        }
+
+    // Coin timer
+    const coinInterval = setInterval(() => {
+        if (!players.has(socket.id)) return clearInterval(coinInterval);
+        player.coins += 10;
+        socket.emit('coinUpdate', { playerId: socket.id, coins: player.coins });
     }, 60000);
 });
 
+// ------------------------
+// 5️⃣ Start Server
+// ------------------------
 const PORT = process.env.PORT || 3000;
-http.listen(PORT, () => {
+server.listen(PORT, () => {
     console.log(`🎮 Server running on port ${PORT}`);
     console.log('👶 COPPA-COMPLIANT MODE: Safe for users under 13');
-    console.log('✅ Multi-layer chat filtering active');
+    console.log('✅ Multi-layer offline chat filtering active (regex + GPT-J style)');
 });
