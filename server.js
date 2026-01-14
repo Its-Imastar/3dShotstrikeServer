@@ -1,5 +1,4 @@
-// server.js - COPPA-Compliant, Offline Multi-Layer Chat Filter (512MB RAM)
-// Multiplayer Game Server with Enhanced Chat Filtering
+// server.js - Multiplayer Game Server with Health Regeneration & Advanced Features
 
 if (process.env.NODE_ENV !== 'production') require('dotenv').config();
 
@@ -32,7 +31,18 @@ const CONFIG = {
     SPAM_WINDOW_MS: 15000,
     MAX_MESSAGES_PER_WINDOW: 4,
     MAX_DUPLICATE_MESSAGES: 2,
-    TOXICITY_THRESHOLD: 0.7
+    TOXICITY_THRESHOLD: 0.7,
+    HEALTH_REGEN_DELAY: 3000, // 3 seconds before regen starts
+    HEALTH_REGEN_AMOUNT: 5,   // HP per regen tick
+    HEALTH_REGEN_INTERVAL: 1000, // 1 second between regen ticks
+    RESPAWN_TIME: 5000, // 5 seconds to respawn
+    RESPAWN_HEALTH: 100,
+    BASE_MAX_HEALTH: 100,
+    INACTIVE_THRESHOLD: 5000, // 5 seconds of inactivity
+    INACTIVE_CHECK_INTERVAL: 1000, // Check every 1 second
+    HIT_COOLDOWN: 1000, // 1 second between hits on same player
+    COINS_PER_HIT: 5, // Coins awarded for hitting active players
+    COINS_PER_KILL: 25 // Coins awarded for killing active players
 };
 
 // ------------------------
@@ -41,6 +51,9 @@ const CONFIG = {
 const players = new Map();           // socket.id -> player data
 const messageHistory = new Map();    // socket.id -> message history for spam detection
 const playerStats = new Map();       // socket.id -> moderation stats
+const regenIntervals = new Map();    // socket.id -> regeneration interval
+const respawnTimers = new Map();     // socket.id -> respawn timer
+const hitCooldowns = new Map();      // socket.id -> last hit timestamps {targetId: timestamp}
 
 // ------------------------
 // 3️⃣ Enhanced Chat Filtering System
@@ -72,177 +85,61 @@ const blockedSet = new Set(blockedWords);
 
 // Common bypass patterns to catch
 const BYPASS_PATTERNS = [
-    // PROFANITY: f*ck variations
     /f[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[ckq7ĸķκϰ+†]/gi,
     /f[\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[ckq7ĸķκϰ+†]/gi,
-    /ph[ckqĸķκϰ][ckqĸķκϰ]?/gi,
-    /f[uv][ckq]/gi,  // fvck, fvq
-    /f[a4][gq][ckq]/gi, // fag, faq
-    /f[ckq]{2,}/gi, // fkk, fcc, fqq
-    
-    // PROFANITY: sh*t variations
     /s[\.\s\_\-]*[h4#ħĥη][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[t7+†τ]/gi,
-    /s[\.\s\_\-]*[h4#ħĥη][\.\s\_\-]*[i1l!|íìîïīΙł]*[\.\s\_\-]*[t7+†τ]/gi, // sh*t, sht
-    /s[ckq][h4#]?[i1l!]?[t7+]/gi, // sht, scht, sciht
-    /s[cz5][h4#]?[i1l!]?[t7+]/gi, // sziht
-    
-    // PROFANITY: a** variations
     /[a4@áàâäãåαΔΛ][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[sz5$§ßšşzžζ]/gi,
-    /[a4@][rЯ][sz5$]?[e3]?/gi, // arse, ars
-    /[a4@]zz/gi, // azz
-    
-    // PROFANITY: b*tch variations
     /b[\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[t7+†τ][\.\s\_\-]*[ch4#ċĉčçς]/gi,
-    /b[\.\s\_\-]*[i1l!|][\.\s\_\-]*[t7+][\.\s\_\-]*[ch4#][\.\s\_\-]*[h4#]?/gi, // bi7ch, b1tch
-    /b[uy][t7][ch4#]/gi, // bytch, butch
-    /b[uv][i1l!][t7][ch4#]/gi, // bvitch
-    
-    // PROFANITY: d*mn variations
     /d[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[mnмηñ][\.\s\_\-]*[mnмηñ]/gi,
-    /d[\.\s\_\-]*[a4@][\.\s\_\-]*[mn][\.\s\_\-]*[nb8]?/gi, // damn, damb
-    /d[ae3][mn][mn]?[i1l!]?[t7]?/gi, // demn, demnit
-    
-    // PROFANITY: Other common words
-    /[ckq][\.\s\_\-]*[o0°óòôöõōΩθ][\.\s\_\-]*[ckqĸķκϰ]/gi, // c*ck
-    /p[\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[yγλ]/gi, // p*ssy
-    /[ckq][\.\s\_\-]*[o0°óòôöõōΩθ][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[sz5$§ßšşzžζ][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[kqĸķκϰ]/gi, // c*cksucker
-    /[dt7][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[ckqĸķκϰ]/gi, // d*ck
-    /r[\.\s\_\-]*[e3€£ëèéêēΣ][\.\s\_\-]*[t7+†τ][\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[rЯ][\.\s\_\-]*[dδ]/gi, // r*tard
-    
-    // SLURS & HATE SPEECH
-    /[mn][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[g6ğģǥ][\.\s\_\-]*[g6ğģǥ][\.\s\_\-]*[e3€£ëèéêēΣ][\.\s\_\-]*[rЯ]/gi, // n*gger
-    /[mn][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[g6ğģǥ][g6ğģǥ]?[a4@]?[rЯ]?/gi, // nigga, nigg
-    /[mn][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[bp8][\.\s\_\-]*[bp8]?/gi, // nibba
-    /f[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[g6ğģǥ]/gi, // f*g
-    /[wv][\.\s\_\-]*[h4#ħĥη][\.\s\_\-]*[o0°óòôöõōΩθ][\.\s\_\-]*[rЯ][\.\s\_\-]*[e3€£ëèéêēΣ]/gi, // wh*re
-    /[sz5$§ßšşzžζ][\.\s\_\-]*[l1|ł][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[t7+†τ]/gi, // sl*t
-    /[ckq][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[mnмηñ][\.\s\_\-]*[t7+†τ]/gi, // c*nt
-    
-    // VIOLENT/HARMFUL CONTENT
-    /[kg6][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[l1|ł][\.\s\_\-]*[l1|ł]/gi, // k*ll
-    /[sz5$§ßšşzžζ][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[dδ]/gi, // su*cide
-    /[dδ][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[e3€£ëèéêēΣ]/gi, // d*e
-    /r[\.\s\_\-]*[a4@áàâäãåαΔΛ][\.\s\_\-]*[pρπ][\.\s\_\-]*[e3€£ëèéêēΣ]/gi, // r*pe
-    /[h4#ħĥη][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[t7+†τ]/gi, // h*t
-    
-    // BYPASS TECHNIQUES
-    /\b([a-z])\1{2,}\b/gi, // 3+ repeated letters (aaa, bbb)
-    /([a-z])\1{4,}/gi, // 5+ repeated characters anywhere
-    /(\w)\1\.\1/gi, // a.a (dot separation)
-    /(\w)-\1-\1/gi, // a-a-a (dash separation)
-    /(\w)\s+\1\s+\1/gi, // a a a (space separation)
-    
-    // CHARACTER FLOODING
-    /([a-z])\1{2,}([a-z])\2{2,}/gi, // aaabbb (combined repeats)
-    /[a-z]{15,}/gi, // Very long single "word"
-    
-    // MIXED BYPASS PATTERNS
-    /[a-z][0-9][a-z][0-9]/gi, // a1b2 (alternating)
-    /[0-9][a-z][0-9][a-z]/gi, // 1a2b
-    /[a-z]+[0-9]+[a-z]+/gi, // abc123def
-    /[0-9]+[a-z]+[0-9]+/gi, // 123abc456
-    
-    // HOMOGLYPH ATTACKS
-    /[a4@][5$][5$]/gi, // a$$ (using similar characters)
-    /[5$][h4#][i1l!][t7]/gi, // $hit
-    /[f][0o][ckq]/gi, // f0ck
-    /[5$][ckq][uμ][mkм]/gi, // $cum
-    
-    // PHONETIC BYPASSES
-    /ph[au4][ckq]/gi, // phack, phuck
-    /[ckq][o0][ckq]/gi, // cock, kock
-    /[sz5][e3][ckq][sz5]/gi, // secs, seks
-    /[sz5][e3][xχ]/gi, // sex
-    /[ckq][o0][o0][l1][e3]/gi, // coole
-    
-    // SPLIT WORD PATTERNS (more comprehensive)
-    /(?:f|ph)(?:\s*[\.\-\_\*]?\s*)(?:u|4|a)(?:\s*[\.\-\_\*]?\s*)(?:c|k|q|7)(?:\s*[\.\-\_\*]?\s*)(?:c|k|q|7)/gi,
-    /(?:s|5|\$)(?:\s*[\.\-\_\*]?\s*)(?:h|4|\#)(?:\s*[\.\-\_\*]?\s*)(?:i|1|\!|\|)(?:\s*[\.\-\_\*]?\s*)(?:t|7|\+)/gi,
-    
-    // REVERSED/INVERTED WORDS
-    /[ckq7][ckq7]?[a4@][ufvμ]/gi, // kcuf, cuf (fuck reversed)
-    /[t7+][i1l!][h4#][sz5\$]/gi, // tihs (shit reversed)
-    
-    // DOUBLE/TANDEM BYPASS
-    /(?:fuck|shit|ass|bitch).*?(?:fuck|shit|ass|bitch)/gi, // Multiple in same message
-    
-    // CAMEL CASE BYPASS
-    /[A-Z][a-z]*[A-Z][a-z]*[A-Z]/g, // FuCk, ShIt
-    
-    // LEETSPEAK NUMERIC REPLACEMENT
-    /[a-z]*[0-9]{2,}[a-z]*/gi, // Words with number clusters
-    /[0-9][a-z]{2,}[0-9]/gi, // Numbers sandwiching letters
-    
-    // ZALGO/UNICODE ABUSE
-    /[a-z][\u0300-\u036F]{2,}[a-z]/gi, // Characters with combining marks
-    /\p{Mark}{3,}/gu, // Excessive diacritics
-    
-    // VISUAL SIMILARITY (looks like words)
-    /|\\|\|\|/gi, // || (looks like II)
-    /[|!1][vV][|!1]/gi, // |V| (looks like M)
-    /[l1][o0][l1]/gi, // lol but with numbers
+    /[ckq][\.\s\_\-]*[o0°óòôöõōΩθ][\.\s\_\-]*[ckqĸķκϰ]/gi,
+    /[mn][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[g6ğģǥ][\.\s\_\-]*[g6ğģǥ][\.\s\_\-]*[e3€£ëèéêēΣ][\.\s\_\-]*[rЯ]/gi,
+    /[kg6][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[l1|ł][\.\s\_\-]*[l1|ł]/gi,
+    /[sz5$§ßšşzžζ][\.\s\_\-]*[uμυüúùûū][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[ckqĸķκϰ][\.\s\_\-]*[i1l!|íìîïīΙł][\.\s\_\-]*[dδ]/gi,
+    /\b([a-z])\1{2,}\b/gi,
+    /([a-z])\1{4,}/gi,
+    /(\w)\1\.\1/gi,
+    /(\w)-\1-\1/gi,
+    /(\w)\s+\1\s+\1/gi,
+    /([a-z])\1{2,}([a-z])\2{2,}/gi,
+    /[a-z]{15,}/gi,
+    /[a-z][0-9][a-z][0-9]/gi,
+    /[0-9][a-z][0-9][a-z]/gi,
+    /[a-z]+[0-9]+[a-z]+/gi,
+    /[0-9]+[a-z]+[0-9]+/gi,
 ];
 
 // Personal information patterns
 const PII_PATTERNS = [
-    /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/, // phone numbers
-    /\b[\w._%+-]+@[\w.-]+\.[A-Za-z]{2,}\b/, // email
-    /\b\d{5}(?:[-\s]\d{4})?\b/, // zip code
-    /\b\d{1,5}\s+\w+\s+(street|st|ave|avenue|road|rd|drive|dr|lane|ln)\b/i, // address
-    /\b(?:discord|snap|insta|tiktok|whatsapp|telegram|signal)[\s\:\.]*[\w@\.\-]+\b/i // social media
+    /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
+    /\b[\w._%+-]+@[\w.-]+\.[A-Za-z]{2,}\b/,
+    /\b\d{5}(?:[-\s]\d{4})?\b/,
+    /\b\d{1,5}\s+\w+\s+(street|st|ave|avenue|road|rd|drive|dr|lane|ln)\b/i,
+    /\b(?:discord|snap|insta|tiktok|whatsapp|telegram|signal)[\s\:\.]*[\w@\.\-]+\b/i
 ];
 
 // Toxic keywords with weights
 const TOXIC_KEYWORDS = {
-    // Profanity bypass attempts
     'fack': 0.85, 'fak': 0.85, 'fukk': 0.85, 'phuck': 0.9, 'fuk': 0.85,
     'sheet': 0.8, 'shyt': 0.8, 'shiit': 0.8, 'sh1t': 0.85, 'shet': 0.8,
     'azz': 0.7, 'a55': 0.7, 'as': 0.65,
-    'bich': 0.8, 'bi7ch': 0.85, 'b1tch': 0.85, 'b1tch': 0.85,
+    'bich': 0.8, 'bi7ch': 0.85, 'b1tch': 0.85,
     'dam': 0.6, 'd4mn': 0.7, 'demn': 0.65,
-    
-    // Harmful content
     'kill': 0.9, 'suicide': 1.0, 'die': 0.9, 'dead': 0.8,
     'hate': 0.7, 'stupid': 0.6, 'idiot': 0.7, 'loser': 0.6,
     'dumb': 0.6, 'moron': 0.7, 'retard': 0.9,
-    
-    // Bullying/harassment
     'ugly': 0.5, 'fat': 0.6, 'homo': 0.8, 'gay': 0.7,
     'noob': 0.4, 'n00b': 0.4
 };
 
-// Character substitution map
-const CHAR_SUBSTITUTIONS = {
-    'a': ['4', '@', 'á', 'à', 'â', 'ä', 'ã', 'å', 'α', 'Δ', 'Λ'],
-    'b': ['8', 'ß', 'Β', 'β'],
-    'c': ['(', '[', '{', '<', '©', '¢'],
-    'e': ['3', '€', '£', 'ë', 'è', 'é', 'ê', 'ē', 'Σ'],
-    'i': ['1', '!', '|', 'í', 'ì', 'î', 'ï', 'ī', 'Ι'],
-    'o': ['0', '°', 'ó', 'ò', 'ô', 'ö', 'õ', 'ō', 'Ω', 'θ'],
-    's': ['5', '$', 'z', 'š', 'ş', '§'],
-    't': ['7', '+', '†', 'τ'],
-    'u': ['μ', 'υ', 'ü', 'ú', 'ù', 'û', 'ū'],
-    'v': ['υ', 'ν'],
-    'x': ['×', 'Χ', 'χ'],
-    'z': ['2', 'ž', 'ζ']
-};
-
 // ------------------------
-// 4️⃣ Filtering Functions
+// 4️⃣ Chat Filtering Functions
 // ------------------------
 
-/**
- * Normalize text to prevent bypass attempts
- */
 function normalizeText(text) {
     if (!text || typeof text !== 'string') return '';
     
     let normalized = text.toLowerCase();
-    
-    // Remove excessive whitespace
     normalized = normalized.replace(/\s+/g, ' ');
-    
-    // Convert common substitutions to base letters
     normalized = normalized
         .replace(/[4@áàâäãåαΔΛ]/g, 'a')
         .replace(/[8ßΒβ]/g, 'b')
@@ -252,33 +149,22 @@ function normalizeText(text) {
         .replace(/[5$zšş§]/g, 's')
         .replace(/[7+†τ]/g, 't')
         .replace(/[μυüúùûū]/g, 'u');
-    
-    // Remove dots and special characters between letters (f.a.c.k -> fack)
     normalized = normalized.replace(/[\.\_\-\s]+/g, '');
-    
-    // Reduce repeated characters (faaaack -> fack)
     normalized = normalized.replace(/([a-z])\1{2,}/g, '$1$1');
-    
-    // Remove all remaining non-alphanumeric characters
     normalized = normalized.replace(/[^a-z0-9]/g, '');
     
     return normalized;
 }
 
-/**
- * Check for bypass patterns like split words or special characters
- */
 function checkBypassPatterns(message) {
     const lowerMessage = message.toLowerCase();
     
-    // Check predefined bypass patterns
     for (const pattern of BYPASS_PATTERNS) {
         if (pattern.test(lowerMessage)) {
             return true;
         }
     }
     
-    // Check for words split by spaces or dots
     const words = lowerMessage.split(/\s+/);
     const joined = words.join('');
     for (const word of blockedSet) {
@@ -290,9 +176,6 @@ function checkBypassPatterns(message) {
     return false;
 }
 
-/**
- * Check for personal information
- */
 function containsPII(message) {
     for (const pattern of PII_PATTERNS) {
         if (pattern.test(message)) {
@@ -302,29 +185,22 @@ function containsPII(message) {
     return false;
 }
 
-/**
- * Layer 1: Basic keyword and pattern filtering
- */
 function basicFilter(message) {
     if (!message || typeof message !== 'string') return false;
     
-    // Check message length
     if (message.length < CONFIG.MIN_MESSAGE_LENGTH || 
         message.length > CONFIG.MAX_MESSAGE_LENGTH) {
         return false;
     }
     
-    // Check for PII
     if (containsPII(message)) {
         return false;
     }
     
-    // Check bypass patterns
     if (checkBypassPatterns(message)) {
         return false;
     }
     
-    // Normalize and check blocked words
     const normalized = normalizeText(message);
     
     for (const word of blockedSet) {
@@ -336,26 +212,20 @@ function basicFilter(message) {
     return true;
 }
 
-/**
- * Layer 2: Lightweight toxicity scoring
- */
 function scoreToxicity(message) {
     const normalized = normalizeText(message);
     let score = 0;
     
-    // Check toxic keywords
     for (const [word, weight] of Object.entries(TOXIC_KEYWORDS)) {
         if (normalized.includes(word)) {
             score = Math.max(score, weight);
         }
     }
     
-    // Check for all caps (shouting)
     if (message === message.toUpperCase() && message.length > 5) {
         score = Math.max(score, 0.3);
     }
     
-    // Check for excessive punctuation
     const punctuationCount = (message.match(/[!?]{3,}/g) || []).length;
     if (punctuationCount > 2) {
         score = Math.max(score, 0.2);
@@ -364,16 +234,11 @@ function scoreToxicity(message) {
     return score;
 }
 
-/**
- * Complete moderation pipeline
- */
 function moderateMessage(message) {
-    // Layer 1: Basic filtering
     if (!basicFilter(message)) {
         return { allowed: false, reason: 'basic_filter' };
     }
     
-    // Layer 2: Toxicity scoring
     const toxicityScore = scoreToxicity(message);
     if (toxicityScore >= CONFIG.TOXICITY_THRESHOLD) {
         return { allowed: false, reason: 'toxicity', score: toxicityScore };
@@ -382,53 +247,50 @@ function moderateMessage(message) {
     return { allowed: true, score: toxicityScore };
 }
 
-// ------------------------
-// 5️⃣ Spam Detection
-// ------------------------
-
-/**
- * Check if message is spam
- */
 function isSpam(playerId, message) {
     const now = Date.now();
     
-    // Initialize history if needed
     if (!messageHistory.has(playerId)) {
         messageHistory.set(playerId, []);
     }
     
     const history = messageHistory.get(playerId);
     
-    // Remove old messages (outside spam window)
     while (history.length > 0 && now - history[0].timestamp > CONFIG.SPAM_WINDOW_MS) {
         history.shift();
     }
     
-    // Check message frequency
     if (history.length >= CONFIG.MAX_MESSAGES_PER_WINDOW) {
         return true;
     }
     
-    // Check for duplicate messages
     const duplicateCount = history.filter(m => m.message === message).length;
     if (duplicateCount >= CONFIG.MAX_DUPLICATE_MESSAGES) {
         return true;
     }
     
-    // Add message to history
     history.push({ message, timestamp: now });
     
     return false;
 }
 
 // ------------------------
-// 6️⃣ Player Management
+// 5️⃣ Player Management
 // ------------------------
 
 /**
  * Initialize player data
  */
 function initPlayer(socketId) {
+    // Generate random color
+    const colors = [
+        '#FF6B6B', '#4ECDC4', '#FFD166', '#06D6A0', '#118AB2',
+        '#EF476F', '#FFD166', '#06D6A0', '#073B4C', '#7209B7',
+        '#F72585', '#3A0CA3', '#4361EE', '#4CC9F0', '#FF9E00',
+        '#FF5400', '#FF0054', '#9B5DE5', '#00BBF9', '#00F5D4'
+    ];
+    const randomColor = colors[Math.floor(Math.random() * colors.length)];
+    
     const playerData = {
         id: socketId,
         username: `Guest${Math.floor(Math.random() * 1000)}`,
@@ -439,16 +301,30 @@ function initPlayer(socketId) {
         score: 0,
         position: { x: 0, y: 1.67, z: 0 },
         rotation: { x: 0, y: 0 },
+        color: randomColor,
         warnings: 0,
         muted: false,
         muteExpiry: null,
-        joinTime: Date.now()
+        joinTime: Date.now(),
+        lastDamageTime: 0,
+        lastActivityTime: Date.now(),
+        lastMovementTime: Date.now(),
+        isDead: false,
+        isRespawning: false,
+        isVisible: true,
+        isActive: true,
+        hitHistory: []
     };
     
     players.set(socketId, playerData);
     playerStats.set(socketId, {
         messagesSent: 0,
         messagesBlocked: 0,
+        hitsGiven: 0,
+        hitsReceived: 0,
+        kills: 0,
+        deaths: 0,
+        coinsEarned: 0,
         lastActive: Date.now()
     });
     
@@ -456,29 +332,285 @@ function initPlayer(socketId) {
 }
 
 /**
- * Check and clear expired mutes
+ * Check if player is active (not inactive for >5 seconds)
  */
-function checkMuteStatus(player) {
-    if (player.muted && player.muteExpiry && Date.now() > player.muteExpiry) {
-        player.muted = false;
-        player.muteExpiry = null;
-        player.warnings = 0;
-        return false;
-    }
-    return player.muted;
+function isPlayerActive(playerId) {
+    const player = players.get(playerId);
+    if (!player) return false;
+    
+    if (player.isDead || player.isRespawning || !player.isVisible) return false;
+    
+    const timeSinceLastActivity = Date.now() - player.lastActivityTime;
+    return timeSinceLastActivity < CONFIG.INACTIVE_THRESHOLD;
 }
 
 /**
- * Apply mute to player
+ * Update player activity
  */
-function applyMute(player, duration = CONFIG.MUTE_DURATION) {
-    player.muted = true;
-    player.muteExpiry = Date.now() + duration;
-    player.warnings = CONFIG.MAX_WARNINGS; // Max out warnings
+function updatePlayerActivity(playerId) {
+    const player = players.get(playerId);
+    if (!player) return;
+    
+    player.lastActivityTime = Date.now();
+    
+    // If player was marked inactive, mark them active again
+    if (!player.isActive) {
+        player.isActive = true;
+        
+        // Broadcast to all players that this player is active again
+        io.emit('playerActivityUpdate', {
+            playerId: playerId,
+            isActive: true,
+            username: player.username
+        });
+    }
+}
+
+/**
+ * Check inactivity for all players
+ */
+function checkAllPlayersInactivity() {
+    const now = Date.now();
+    
+    players.forEach((player, playerId) => {
+        if (player.isDead || player.isRespawning) return;
+        
+        const timeSinceLastActivity = now - player.lastActivityTime;
+        
+        // If inactive for >5 seconds and currently marked active
+        if (timeSinceLastActivity >= CONFIG.INACTIVE_THRESHOLD && player.isActive) {
+            player.isActive = false;
+            
+            // Broadcast inactivity to all players
+            io.emit('playerActivityUpdate', {
+                playerId: playerId,
+                isActive: false,
+                username: player.username,
+                inactiveFor: Math.floor(timeSinceLastActivity / 1000)
+            });
+        }
+    });
+}
+
+/**
+ * Start inactivity checking
+ */
+function startInactivityChecker() {
+    setInterval(checkAllPlayersInactivity, CONFIG.INACTIVE_CHECK_INTERVAL);
+}
+
+/**
+ * Check hit cooldown between players
+ */
+function canHitPlayer(attackerId, targetId) {
+    if (!hitCooldowns.has(attackerId)) {
+        hitCooldowns.set(attackerId, new Map());
+    }
+    
+    const attackerCooldowns = hitCooldowns.get(attackerId);
+    const lastHitTime = attackerCooldowns.get(targetId) || 0;
+    const timeSinceLastHit = Date.now() - lastHitTime;
+    
+    return timeSinceLastHit >= CONFIG.HIT_COOLDOWN;
+}
+
+/**
+ * Update hit cooldown
+ */
+function updateHitCooldown(attackerId, targetId) {
+    if (!hitCooldowns.has(attackerId)) {
+        hitCooldowns.set(attackerId, new Map());
+    }
+    
+    hitCooldowns.get(attackerId).set(targetId, Date.now());
 }
 
 // ------------------------
-// 7️⃣ Game Shop System
+// 6️⃣ Health Regeneration System
+// ------------------------
+
+function startHealthRegen(playerId) {
+    if (regenIntervals.has(playerId)) {
+        clearInterval(regenIntervals.get(playerId));
+    }
+    
+    const regenInterval = setInterval(() => {
+        const player = players.get(playerId);
+        if (!player || player.isDead || player.isRespawning) {
+            clearInterval(regenInterval);
+            regenIntervals.delete(playerId);
+            return;
+        }
+        
+        const now = Date.now();
+        
+        if (player.health < player.maxHealth && 
+            now - player.lastDamageTime >= CONFIG.HEALTH_REGEN_DELAY &&
+            !player.isDead && player.isVisible) {
+            
+            let regenAmount = CONFIG.HEALTH_REGEN_AMOUNT;
+            const hpRegenUpgrade = player.upgrades['hp_regen'] || 0;
+            if (hpRegenUpgrade > 0) {
+                regenAmount += (hpRegenUpgrade * 2);
+            }
+            
+            const newHealth = Math.min(player.maxHealth, player.health + regenAmount);
+            
+            if (newHealth !== player.health) {
+                player.health = newHealth;
+                
+                // Send update to player
+                const socket = io.sockets.sockets.get(playerId);
+                if (socket) {
+                    socket.emit('healthUpdate', {
+                        health: player.health,
+                        maxHealth: player.maxHealth,
+                        regen: true
+                    });
+                }
+                
+                // Broadcast to other players
+                socket.broadcast.emit('playerHealthUpdate', {
+                    playerId: playerId,
+                    health: player.health,
+                    maxHealth: player.maxHealth,
+                    regen: true
+                });
+            }
+        }
+    }, CONFIG.HEALTH_REGEN_INTERVAL);
+    
+    regenIntervals.set(playerId, regenInterval);
+}
+
+function stopHealthRegen(playerId) {
+    if (regenIntervals.has(playerId)) {
+        clearInterval(regenIntervals.get(playerId));
+        regenIntervals.delete(playerId);
+    }
+}
+
+// ------------------------
+// 7️⃣ Death & Respawn System
+// ------------------------
+
+function handlePlayerDeath(playerId, killerId = null) {
+    const player = players.get(playerId);
+    if (!player || player.isDead) return;
+    
+    // Set death state
+    player.isDead = true;
+    player.isVisible = false;
+    player.health = 0;
+    
+    // Update stats
+    const stats = playerStats.get(playerId);
+    if (stats) {
+        stats.deaths++;
+    }
+    
+    // Handle killer rewards (only if killer is active)
+    if (killerId && killerId !== playerId && isPlayerActive(killerId)) {
+        const killer = players.get(killerId);
+        const killerStats = playerStats.get(killerId);
+        
+        if (killer && killerStats) {
+            const killReward = CONFIG.COINS_PER_KILL;
+            killer.coins += killReward;
+            killerStats.coinsEarned += killReward;
+            killerStats.kills++;
+            
+            // Notify killer
+            const killerSocket = io.sockets.sockets.get(killerId);
+            if (killerSocket) {
+                killerSocket.emit('coinUpdate', {
+                    playerId: killerId,
+                    coins: killer.coins,
+                    reason: 'kill',
+                    amount: killReward
+                });
+                
+                killerSocket.emit('systemMessage', {
+                    message: `💰 +${killReward} coins for killing ${player.username}`
+                });
+            }
+        }
+    }
+    
+    // Broadcast death to all players (player disappears)
+    io.emit('playerDied', {
+        playerId: playerId,
+        username: player.username,
+        killerId: killerId,
+        position: player.position
+    });
+    
+    // Notify the dead player
+    const playerSocket = io.sockets.sockets.get(playerId);
+    if (playerSocket) {
+        playerSocket.emit('youDied', {
+            respawnTime: CONFIG.RESPAWN_TIME,
+            killerId: killerId
+        });
+    }
+    
+    // Start respawn timer
+    respawnTimers.set(playerId, setTimeout(() => {
+        respawnPlayer(playerId);
+    }, CONFIG.RESPAWN_TIME));
+}
+
+function respawnPlayer(playerId) {
+    const player = players.get(playerId);
+    if (!player) return;
+    
+    // Clear respawn timer
+    const timer = respawnTimers.get(playerId);
+    if (timer) clearTimeout(timer);
+    respawnTimers.delete(playerId);
+    
+    // Reset player state
+    player.isDead = false;
+    player.isRespawning = false;
+    player.isVisible = true;
+    player.health = CONFIG.RESPAWN_HEALTH;
+    
+    // Reset position to spawn point (or random location)
+    player.position = { x: Math.random() * 20 - 10, y: 1.67, z: Math.random() * 20 - 10 };
+    
+    // Update activity on respawn
+    updatePlayerActivity(playerId);
+    
+    // Broadcast respawn to all players (player reappears)
+    io.emit('playerRespawned', {
+        playerId: playerId,
+        username: player.username,
+        position: player.position,
+        health: player.health,
+        color: player.color,
+        isVisible: true
+    });
+    
+    // Notify the player
+    const playerSocket = io.sockets.sockets.get(playerId);
+    if (playerSocket) {
+        playerSocket.emit('respawnComplete', {
+            position: player.position,
+            health: player.health
+        });
+        
+        playerSocket.emit('healthUpdate', {
+            health: player.health,
+            maxHealth: player.maxHealth
+        });
+    }
+    
+    // Start health regeneration system
+    startHealthRegen(playerId);
+}
+
+// ------------------------
+// 8️⃣ Shop System
 // ------------------------
 
 const SHOP_ITEMS = {
@@ -575,7 +707,7 @@ function calculateUpgradePrice(item, currentLevel) {
 }
 
 // ------------------------
-// 8️⃣ Socket.IO Event Handlers
+// 9️⃣ Socket.IO Event Handlers
 // ------------------------
 
 io.on('connection', (socket) => {
@@ -584,14 +716,34 @@ io.on('connection', (socket) => {
     // Initialize player
     const player = initPlayer(socket.id);
     
+    // Start health regeneration system
+    startHealthRegen(socket.id);
+    
+    // Start inactivity checker
+    startInactivityChecker();
+    
     // Send initial data to player
     socket.emit('init', { 
         playerId: socket.id, 
-        player: player,
+        player: {
+            id: player.id,
+            username: player.username,
+            coins: player.coins,
+            health: player.health,
+            maxHealth: player.maxHealth,
+            position: player.position,
+            color: player.color,
+            isDead: player.isDead,
+            isVisible: player.isVisible,
+            isActive: player.isActive
+        },
         shopItems: SHOP_ITEMS,
         config: {
             maxUsernameLength: CONFIG.MAX_USERNAME_LENGTH,
-            maxMessageLength: CONFIG.MAX_MESSAGE_LENGTH
+            maxMessageLength: CONFIG.MAX_MESSAGE_LENGTH,
+            healthRegenDelay: CONFIG.HEALTH_REGEN_DELAY,
+            respawnTime: CONFIG.RESPAWN_TIME,
+            inactiveThreshold: CONFIG.INACTIVE_THRESHOLD
         }
     });
     
@@ -599,7 +751,11 @@ io.on('connection', (socket) => {
     socket.broadcast.emit('playerJoined', {
         id: socket.id,
         username: player.username,
-        position: player.position
+        position: player.position,
+        color: player.color,
+        health: player.health,
+        isVisible: player.isVisible,
+        isActive: player.isActive
     });
     
     // ------------------------
@@ -611,7 +767,6 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Validate username
         const cleanUsername = username.trim().slice(0, CONFIG.MAX_USERNAME_LENGTH);
         if (cleanUsername.length < 2) {
             socket.emit('error', { message: 'Username too short' });
@@ -625,11 +780,9 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Update username
         const oldUsername = player.username;
         player.username = cleanUsername;
         
-        // Notify all players
         io.emit('playerUsernameUpdated', { 
             playerId: socket.id, 
             oldUsername, 
@@ -637,14 +790,219 @@ io.on('connection', (socket) => {
         });
         
         socket.emit('usernameSet', { success: true, username: cleanUsername });
+        updatePlayerActivity(socket.id);
+    });
+    
+    // ------------------------
+    // Event: Player Movement
+    // ------------------------
+    socket.on('playerMove', (data) => {
+        if (player.isDead || !player.isVisible) return;
+        
+        player.lastMovementTime = Date.now();
+        updatePlayerActivity(socket.id);
+        
+        if (data.position) player.position = data.position;
+        if (data.rotation) player.rotation = data.rotation;
+        
+        // Broadcast to other players (only if visible)
+        if (player.isVisible) {
+            socket.broadcast.emit('playerMoved', {
+                playerId: socket.id,
+                username: player.username,
+                position: player.position,
+                rotation: player.rotation,
+                color: player.color,
+                isVisible: player.isVisible,
+                isActive: player.isActive
+            });
+        }
+    });
+    
+    // ------------------------
+    // Event: Player Attack
+    // ------------------------
+    socket.on('playerAttack', (data) => {
+        if (player.isDead || !player.isVisible) return;
+        
+        updatePlayerActivity(socket.id);
+        
+        const { targetId, damage = 10 } = data;
+        if (!targetId || targetId === socket.id) return;
+        
+        const target = players.get(targetId);
+        if (!target || !target.isVisible) return;
+        
+        if (!canHitPlayer(socket.id, targetId)) return;
+        
+        // Check if target is active (not inactive for >5 seconds)
+        if (!isPlayerActive(targetId)) {
+            socket.emit('systemMessage', {
+                message: '⚠️ Cannot attack inactive players'
+            });
+            return;
+        }
+        
+        updateHitCooldown(socket.id, targetId);
+        
+        // Broadcast attack to other players
+        socket.broadcast.emit('playerAttacked', {
+            attackerId: socket.id,
+            attackerName: player.username,
+            targetId: targetId,
+            targetName: target.username,
+            damage: damage
+        });
+        
+        // Apply damage with coin rewards
+        applyDamage(targetId, socket.id, damage);
+    });
+    
+    /**
+     * Apply damage to a player with coin rewards
+     */
+    function applyDamage(targetId, attackerId, damage) {
+        const target = players.get(targetId);
+        if (!target || target.isDead || !target.isVisible) return;
+        
+        target.lastDamageTime = Date.now();
+        updatePlayerActivity(targetId);
+        stopHealthRegen(targetId);
+        
+        const newHealth = Math.max(0, target.health - damage);
+        target.health = newHealth;
+        
+        // Award coins to attacker for hitting an ACTIVE player
+        const attacker = players.get(attackerId);
+        const attackerStats = playerStats.get(attackerId);
+        if (attacker && attackerStats && isPlayerActive(targetId)) {
+            const hitReward = CONFIG.COINS_PER_HIT;
+            attacker.coins += hitReward;
+            attackerStats.coinsEarned += hitReward;
+            attackerStats.hitsGiven++;
+            
+            const attackerSocket = io.sockets.sockets.get(attackerId);
+            if (attackerSocket) {
+                attackerSocket.emit('coinUpdate', {
+                    playerId: attackerId,
+                    coins: attacker.coins,
+                    reason: 'hit',
+                    amount: hitReward
+                });
+            }
+        }
+        
+        // Update target stats
+        const targetStats = playerStats.get(targetId);
+        if (targetStats) {
+            targetStats.hitsReceived++;
+        }
+        
+        // Notify target
+        const targetSocket = io.sockets.sockets.get(targetId);
+        if (targetSocket) {
+            targetSocket.emit('youWereHit', {
+                attackerId: attackerId,
+                attackerName: attacker?.username,
+                damage: damage,
+                health: target.health
+            });
+            
+            targetSocket.emit('healthUpdate', {
+                health: target.health,
+                maxHealth: target.maxHealth,
+                damageTaken: damage
+            });
+        }
+        
+        // Broadcast damage event
+        io.emit('playerDamaged', {
+            playerId: targetId,
+            username: target.username,
+            health: target.health,
+            maxHealth: target.maxHealth,
+            damage: damage,
+            attackerId: attackerId,
+            attackerName: attacker?.username
+        });
+        
+        // Check if target died
+        if (target.health <= 0 && !target.isDead) {
+            handlePlayerDeath(targetId, attackerId);
+        } else {
+            // Schedule regeneration for target after delay
+            setTimeout(() => {
+                if (players.has(targetId)) {
+                    const updatedTarget = players.get(targetId);
+                    if (!updatedTarget.isDead && updatedTarget.isVisible) {
+                        startHealthRegen(targetId);
+                    }
+                }
+            }, CONFIG.HEALTH_REGEN_DELAY);
+        }
+    }
+    
+    // ------------------------
+    // Event: Player Hit
+    // ------------------------
+    socket.on('playerHit', (data) => {
+        if (player.isDead || !player.isVisible) return;
+        
+        const { attackerId, damage = 10 } = data;
+        
+        player.hitHistory.push({
+            attackerId: attackerId,
+            timestamp: Date.now(),
+            damage: damage
+        });
+        
+        player.hitHistory = player.hitHistory.filter(
+            hit => Date.now() - hit.timestamp < 30000
+        );
+        
+        updatePlayerActivity(socket.id);
+        player.lastDamageTime = Date.now();
+        stopHealthRegen(socket.id);
+        
+        const newHealth = Math.max(0, player.health - damage);
+        player.health = newHealth;
+        
+        socket.emit('healthUpdate', {
+            health: player.health,
+            maxHealth: player.maxHealth,
+            damageTaken: damage,
+            attackerId: attackerId
+        });
+        
+        socket.broadcast.emit('playerDamaged', {
+            playerId: socket.id,
+            username: player.username,
+            health: player.health,
+            maxHealth: player.maxHealth,
+            damage: damage,
+            attackerId: attackerId,
+            attackerName: attackerId ? players.get(attackerId)?.username : null
+        });
+        
+        if (player.health <= 0 && !player.isDead) {
+            handlePlayerDeath(socket.id, attackerId);
+        } else {
+            setTimeout(() => {
+                if (!player.isDead && player.isVisible) {
+                    startHealthRegen(socket.id);
+                }
+            }, CONFIG.HEALTH_REGEN_DELAY);
+        }
     });
     
     // ------------------------
     // Event: Chat Message
     // ------------------------
     socket.on('chatMessage', (data) => {
+        updatePlayerActivity(socket.id);
+        
         // Check if muted
-        if (checkMuteStatus(player)) {
+        if (player.muted) {
             const remaining = Math.ceil((player.muteExpiry - Date.now()) / 1000 / 60);
             socket.emit('systemMessage', { 
                 message: `🔇 You are muted for ${remaining} more minute(s).` 
@@ -654,7 +1012,6 @@ io.on('connection', (socket) => {
         
         const message = data?.message?.trim();
         
-        // Validate message
         if (!message || message.length < CONFIG.MIN_MESSAGE_LENGTH) {
             return;
         }
@@ -678,14 +1035,11 @@ io.on('connection', (socket) => {
         const moderationResult = moderateMessage(message);
         
         if (!moderationResult.allowed) {
-            // Update stats
             const stats = playerStats.get(socket.id);
             stats.messagesBlocked++;
             
-            // Increment warnings
             player.warnings++;
             
-            // Send warning
             const warningsLeft = CONFIG.MAX_WARNINGS - player.warnings;
             let warningMsg = `⚠️ Your message was blocked. `;
             
@@ -697,17 +1051,15 @@ io.on('connection', (socket) => {
             
             socket.emit('systemMessage', { message: warningMsg });
             
-            // Apply mute if max warnings reached
             if (player.warnings >= CONFIG.MAX_WARNINGS) {
-                applyMute(player);
+                player.muted = true;
+                player.muteExpiry = Date.now() + CONFIG.MUTE_DURATION;
                 
-                // Notify player
                 socket.emit('systemMessage', { 
                     message: `🔇 You have been muted for ${CONFIG.MUTE_DURATION / 60000} minutes.` 
                 });
             }
             
-            // Log blocked message (server-side only)
             console.log(`Blocked message from ${player.username}: "${message}"`);
             return;
         }
@@ -723,6 +1075,7 @@ io.on('connection', (socket) => {
             username: player.username,
             message: message,
             timestamp: Date.now(),
+            color: player.color,
             toxicityScore: moderationResult.score
         });
     });
@@ -731,6 +1084,8 @@ io.on('connection', (socket) => {
     // Event: Purchase Upgrade
     // ------------------------
     socket.on('purchaseUpgrade', (data) => {
+        updatePlayerActivity(socket.id);
+        
         const { upgradeId } = data;
         
         // Find the item
@@ -792,92 +1147,48 @@ io.on('connection', (socket) => {
     });
     
     // ------------------------
-    // Event: Player Movement
-    // ------------------------
-    socket.on('playerMove', (data) => {
-        if (data.position) player.position = data.position;
-        if (data.rotation) player.rotation = data.rotation;
-        
-        // Broadcast to other players
-        socket.broadcast.emit('playerMoved', {
-            playerId: socket.id,
-            position: player.position,
-            rotation: player.rotation
-        });
-    });
-    
-    // ------------------------
-    // Event: Player Attack
-    // ------------------------
-    socket.on('playerAttack', (data) => {
-        // Broadcast attack to other players
-        socket.broadcast.emit('playerAttacked', {
-            playerId: socket.id,
-            targetId: data.targetId,
-            damage: data.damage || 10
-        });
-    });
-    
-    // ------------------------
-    // Event: Player Hit
-    // ------------------------
-    socket.on('playerHit', (data) => {
-        const damage = data.damage || 10;
-        player.health = Math.max(0, player.health - damage);
-        
-        // Update player
-        socket.emit('healthUpdate', { 
-            health: player.health, 
-            maxHealth: player.maxHealth 
-        });
-        
-        // Broadcast to other players
-        socket.broadcast.emit('playerDamaged', {
-            playerId: socket.id,
-            health: player.health,
-            damage: damage
-        });
-        
-        // Check if player died
-        if (player.health <= 0) {
-            player.health = player.maxHealth;
-            player.score = Math.max(0, player.score - 10);
-            
-            socket.emit('playerDied', { 
-                respawnPosition: player.position 
-            });
-            
-            socket.broadcast.emit('playerDiedBroadcast', {
-                playerId: socket.id,
-                username: player.username
-            });
-        }
-    });
-    
-    // ------------------------
     // Event: Player Heal
     // ------------------------
     socket.on('playerHeal', (amount = 10) => {
+        if (player.isDead || !player.isVisible) return;
+        
+        updatePlayerActivity(socket.id);
+        
         player.health = Math.min(player.maxHealth, player.health + amount);
-        socket.emit('healthUpdate', { 
-            health: player.health, 
-            maxHealth: player.maxHealth 
+        
+        socket.emit('healthUpdate', {
+            health: player.health,
+            maxHealth: player.maxHealth,
+            healed: amount
+        });
+        
+        socket.broadcast.emit('playerHealthUpdate', {
+            playerId: socket.id,
+            health: player.health,
+            maxHealth: player.maxHealth,
+            healed: amount
         });
     });
     
     // ------------------------
-    // Event: Disconnect
+    // Event: Request Respawn
     // ------------------------
-    socket.on('disconnect', () => {
-        console.log(`❌ Player disconnected: ${socket.id}`);
+    socket.on('requestRespawn', () => {
+        if (!player.isDead) return;
         
-        // Remove player data
-        players.delete(socket.id);
-        messageHistory.delete(socket.id);
-        playerStats.delete(socket.id);
+        // Clear existing respawn timer
+        const timer = respawnTimers.get(socket.id);
+        if (timer) clearTimeout(timer);
         
-        // Notify other players
-        io.emit('playerLeft', socket.id);
+        // Respawn immediately
+        respawnPlayer(socket.id);
+    });
+    
+    // ------------------------
+    // Event: Player Activity Ping
+    // ------------------------
+    socket.on('activityPing', () => {
+        updatePlayerActivity(socket.id);
     });
     
     // ------------------------
@@ -889,30 +1200,52 @@ io.on('connection', (socket) => {
             return;
         }
         
-        player.coins += CONFIG.COINS_PER_MINUTE;
-        socket.emit('coinUpdate', { 
-            playerId: socket.id, 
-            coins: player.coins 
-        });
-        
-        // Auto-heal over time
-        if (player.health < player.maxHealth) {
-            player.health = Math.min(player.maxHealth, player.health + 1);
-            socket.emit('healthUpdate', { 
-                health: player.health, 
-                maxHealth: player.maxHealth 
+        // Only award coins if player is active, not dead, and visible
+        if (!player.isDead && player.isVisible && isPlayerActive(socket.id)) {
+            player.coins += CONFIG.COINS_PER_MINUTE;
+            socket.emit('coinUpdate', {
+                playerId: socket.id,
+                coins: player.coins,
+                reason: 'time'
             });
         }
     }, CONFIG.COIN_INTERVAL);
     
-    // Clean up interval on disconnect
+    // ------------------------
+    // Event: Disconnect
+    // ------------------------
     socket.on('disconnect', () => {
+        console.log(`❌ Player disconnected: ${socket.id}`);
+        
+        // Clean up intervals
         clearInterval(coinInterval);
+        
+        // Clean up regen interval
+        stopHealthRegen(socket.id);
+        
+        // Clean up respawn timer
+        const respawnTimer = respawnTimers.get(socket.id);
+        if (respawnTimer) clearTimeout(respawnTimer);
+        respawnTimers.delete(socket.id);
+        
+        // Clear hit cooldowns
+        hitCooldowns.delete(socket.id);
+        
+        // Notify other players
+        io.emit('playerLeft', {
+            playerId: socket.id,
+            username: player.username
+        });
+        
+        // Remove player data
+        players.delete(socket.id);
+        messageHistory.delete(socket.id);
+        playerStats.delete(socket.id);
     });
 });
 
 // ------------------------
-// 9️⃣ HTTP Routes
+// 🔟 HTTP Routes
 // ------------------------
 app.use(express.static('public'));
 
@@ -922,7 +1255,11 @@ app.get('/api/players', (req, res) => {
         username: p.username,
         score: p.score,
         coins: p.coins,
-        health: p.health
+        health: p.health,
+        isDead: p.isDead,
+        isActive: p.isActive,
+        isVisible: p.isVisible,
+        lastActive: p.lastActivityTime
     }));
     res.json({ players: playerList, total: playerList.length });
 });
@@ -930,29 +1267,34 @@ app.get('/api/players', (req, res) => {
 app.get('/api/stats', (req, res) => {
     const stats = {
         totalPlayers: players.size,
+        activePlayers: Array.from(players.values()).filter(p => p.isActive).length,
+        deadPlayers: Array.from(players.values()).filter(p => p.isDead).length,
+        invisiblePlayers: Array.from(players.values()).filter(p => !p.isVisible).length,
         uptime: process.uptime(),
         memoryUsage: process.memoryUsage(),
-        blockedWordsCount: blockedWords.length,
         connections: io.engine.clientsCount
     };
     res.json(stats);
 });
 
 // ------------------------
-// 🔟 Server Startup
+// Server Startup
 // ------------------------
 const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
     console.log(`🎮 Server running on port ${PORT}`);
-    console.log('👶 COPPA-COMPLIANT MODE: Safe for users under 13');
-    console.log('✅ Enhanced chat filtering active');
-    console.log('✅ Multi-layer protection:');
-    console.log('   - Basic keyword filtering');
-    console.log('   - Bypass pattern detection');
-    console.log('   - Toxicity scoring');
-    console.log('   - Spam detection');
-    console.log('   - PII protection');
+    console.log('✅ Health regeneration system active');
+    console.log('✅ Player disappearance on death active');
+    console.log('✅ Anti-farming protection active');
+    console.log('✅ Chat filtering system active');
+    console.log('✅ Features:');
+    console.log('   - 3-second health regeneration delay');
+    console.log('   - Player disappears when dead until respawn');
+    console.log('   - No coin rewards for hitting inactive players');
+    console.log('   - 5-second inactivity threshold');
+    console.log('   - Multi-layer chat filtering');
+    console.log('   - Hit cooldown protection');
 });
 
 // Graceful shutdown
