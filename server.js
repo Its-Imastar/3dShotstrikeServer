@@ -1,4 +1,4 @@
-// server.js - Multiplayer Game Server with Health Regeneration & Advanced Features
+// server.js - Multiplayer Game Server with Enhanced Anti-Farming Protection
 
 if (process.env.NODE_ENV !== 'production') require('dotenv').config();
 
@@ -345,6 +345,21 @@ function isPlayerActive(playerId) {
 }
 
 /**
+ * Check if player can be targeted (alive, visible, and exists)
+ */
+function canTargetPlayer(playerId) {
+    const player = players.get(playerId);
+    if (!player) return false;
+    
+    // Cannot target dead, respawning, or invisible players
+    if (player.isDead || player.isRespawning || !player.isVisible) {
+        return false;
+    }
+    
+    return true;
+}
+
+/**
  * Update player activity
  */
 function updatePlayerActivity(playerId) {
@@ -498,10 +513,14 @@ function handlePlayerDeath(playerId, killerId = null) {
     const player = players.get(playerId);
     if (!player || player.isDead) return;
     
-    // Set death state
+    // Set death state - PLAYER BECOMES INVISIBLE AND UNTARGETABLE
     player.isDead = true;
-    player.isVisible = false;
+    player.isVisible = false; // CRITICAL: Player disappears from game
+    player.isActive = false;  // Mark as inactive
     player.health = 0;
+    
+    // Stop health regeneration
+    stopHealthRegen(playerId);
     
     // Update stats
     const stats = playerStats.get(playerId);
@@ -509,7 +528,7 @@ function handlePlayerDeath(playerId, killerId = null) {
         stats.deaths++;
     }
     
-    // Handle killer rewards (only if killer is active)
+    // Handle killer rewards (only if killer is active and target was visible)
     if (killerId && killerId !== playerId && isPlayerActive(killerId)) {
         const killer = players.get(killerId);
         const killerStats = playerStats.get(killerId);
@@ -531,18 +550,19 @@ function handlePlayerDeath(playerId, killerId = null) {
                 });
                 
                 killerSocket.emit('systemMessage', {
-                    message: `💰 +${killReward} coins for killing ${player.username}`
+                    message: `💀 +${killReward} coins for eliminating ${player.username}`
                 });
             }
         }
     }
     
-    // Broadcast death to all players (player disappears)
+    // Broadcast death to all players - PLAYER DISAPPEARS
     io.emit('playerDied', {
         playerId: playerId,
         username: player.username,
         killerId: killerId,
-        position: player.position
+        position: player.position,
+        isVisible: false // Explicitly mark as invisible
     });
     
     // Notify the dead player
@@ -550,9 +570,12 @@ function handlePlayerDeath(playerId, killerId = null) {
     if (playerSocket) {
         playerSocket.emit('youDied', {
             respawnTime: CONFIG.RESPAWN_TIME,
-            killerId: killerId
+            killerId: killerId,
+            message: '💀 You have been eliminated! Respawning...'
         });
     }
+    
+    console.log(`💀 Player ${player.username} (${playerId}) died. Invisible until respawn.`);
     
     // Start respawn timer
     respawnTimers.set(playerId, setTimeout(() => {
@@ -569,26 +592,35 @@ function respawnPlayer(playerId) {
     if (timer) clearTimeout(timer);
     respawnTimers.delete(playerId);
     
-    // Reset player state
+    // Reset player state - PLAYER BECOMES VISIBLE AGAIN
     player.isDead = false;
     player.isRespawning = false;
-    player.isVisible = true;
+    player.isVisible = true; // CRITICAL: Player reappears in game
     player.health = CONFIG.RESPAWN_HEALTH;
+    player.lastDamageTime = Date.now();
     
     // Reset position to spawn point (or random location)
-    player.position = { x: Math.random() * 20 - 10, y: 1.67, z: Math.random() * 20 - 10 };
+    player.position = { 
+        x: Math.random() * 20 - 10, 
+        y: 1.67, 
+        z: Math.random() * 20 - 10 
+    };
     
     // Update activity on respawn
     updatePlayerActivity(playerId);
     
-    // Broadcast respawn to all players (player reappears)
+    console.log(`✨ Player ${player.username} (${playerId}) respawned. Now visible.`);
+    
+    // Broadcast respawn to all players - PLAYER REAPPEARS
     io.emit('playerRespawned', {
         playerId: playerId,
         username: player.username,
         position: player.position,
         health: player.health,
+        maxHealth: player.maxHealth,
         color: player.color,
-        isVisible: true
+        isVisible: true, // Explicitly mark as visible
+        isActive: true
     });
     
     // Notify the player
@@ -596,7 +628,8 @@ function respawnPlayer(playerId) {
     if (playerSocket) {
         playerSocket.emit('respawnComplete', {
             position: player.position,
-            health: player.health
+            health: player.health,
+            message: '✨ You have respawned!'
         });
         
         playerSocket.emit('healthUpdate', {
@@ -719,8 +752,10 @@ io.on('connection', (socket) => {
     // Start health regeneration system
     startHealthRegen(socket.id);
     
-    // Start inactivity checker
-    startInactivityChecker();
+    // Start inactivity checker (only once)
+    if (players.size === 1) {
+        startInactivityChecker();
+    }
     
     // Send initial data to player
     socket.emit('init', { 
@@ -823,22 +858,39 @@ io.on('connection', (socket) => {
     // Event: Player Attack
     // ------------------------
     socket.on('playerAttack', (data) => {
-        if (player.isDead || !player.isVisible) return;
+        // CRITICAL: Cannot attack if dead or invisible
+        if (player.isDead || !player.isVisible) {
+            socket.emit('systemMessage', {
+                message: '⚠️ You cannot attack while dead!'
+            });
+            return;
+        }
         
         updatePlayerActivity(socket.id);
         
         const { targetId, damage = 10 } = data;
         if (!targetId || targetId === socket.id) return;
         
+        // CRITICAL CHECK: Can we target this player?
+        if (!canTargetPlayer(targetId)) {
+            socket.emit('systemMessage', {
+                message: '⚠️ Cannot attack that player (dead, respawning, or invisible)'
+            });
+            return;
+        }
+        
         const target = players.get(targetId);
-        if (!target || !target.isVisible) return;
+        if (!target) return;
         
-        if (!canHitPlayer(socket.id, targetId)) return;
+        // Additional check for hit cooldown
+        if (!canHitPlayer(socket.id, targetId)) {
+            return;
+        }
         
-        // Check if target is active (not inactive for >5 seconds)
+        // Check if target is active (not AFK)
         if (!isPlayerActive(targetId)) {
             socket.emit('systemMessage', {
-                message: '⚠️ Cannot attack inactive players'
+                message: '⚠️ Cannot attack inactive players (AFK protection)'
             });
             return;
         }
@@ -863,7 +915,12 @@ io.on('connection', (socket) => {
      */
     function applyDamage(targetId, attackerId, damage) {
         const target = players.get(targetId);
-        if (!target || target.isDead || !target.isVisible) return;
+        
+        // TRIPLE CHECK: Cannot damage dead, invisible, or non-existent players
+        if (!target || target.isDead || !target.isVisible) {
+            console.log(`⚠️ Damage blocked: Target ${targetId} is dead/invisible`);
+            return;
+        }
         
         target.lastDamageTime = Date.now();
         updatePlayerActivity(targetId);
@@ -872,10 +929,10 @@ io.on('connection', (socket) => {
         const newHealth = Math.max(0, target.health - damage);
         target.health = newHealth;
         
-        // Award coins to attacker for hitting an ACTIVE player
+        // Award coins to attacker for hitting an ACTIVE, ALIVE, VISIBLE player
         const attacker = players.get(attackerId);
         const attackerStats = playerStats.get(attackerId);
-        if (attacker && attackerStats && isPlayerActive(targetId)) {
+        if (attacker && attackerStats && isPlayerActive(targetId) && canTargetPlayer(targetId)) {
             const hitReward = CONFIG.COINS_PER_HIT;
             attacker.coins += hitReward;
             attackerStats.coinsEarned += hitReward;
@@ -943,10 +1000,14 @@ io.on('connection', (socket) => {
     }
     
     // ------------------------
-    // Event: Player Hit
+    // Event: Player Hit (Legacy - keeping for compatibility)
     // ------------------------
     socket.on('playerHit', (data) => {
-        if (player.isDead || !player.isVisible) return;
+        // CRITICAL: Cannot be hit if dead or invisible
+        if (player.isDead || !player.isVisible) {
+            console.log(`⚠️ Hit ignored: Player ${socket.id} is dead/invisible`);
+            return;
+        }
         
         const { attackerId, damage = 10 } = data;
         
@@ -1267,7 +1328,7 @@ app.get('/api/players', (req, res) => {
 app.get('/api/stats', (req, res) => {
     const stats = {
         totalPlayers: players.size,
-        activePlayers: Array.from(players.values()).filter(p => p.isActive).length,
+        activePlayers: Array.from(players.values()).filter(p => p.isActive && !p.isDead && p.isVisible).length,
         deadPlayers: Array.from(players.values()).filter(p => p.isDead).length,
         invisiblePlayers: Array.from(players.values()).filter(p => !p.isVisible).length,
         uptime: process.uptime(),
@@ -1284,14 +1345,14 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
     console.log(`🎮 Server running on port ${PORT}`);
-    console.log('✅ Health regeneration system active');
-    console.log('✅ Player disappearance on death active');
-    console.log('✅ Anti-farming protection active');
-    console.log('✅ Chat filtering system active');
+    console.log('✅ Enhanced anti-farming protection active');
     console.log('✅ Features:');
+    console.log('   - Dead players become INVISIBLE and UNTARGETABLE');
+    console.log('   - Cannot shoot or damage dead/invisible players');
+    console.log('   - No coins from attacking dead players');
+    console.log('   - Players reappear only after respawn');
     console.log('   - 3-second health regeneration delay');
-    console.log('   - Player disappears when dead until respawn');
-    console.log('   - No coin rewards for hitting inactive players');
+    console.log('   - No coin rewards for hitting inactive players (AFK)');
     console.log('   - 5-second inactivity threshold');
     console.log('   - Multi-layer chat filtering');
     console.log('   - Hit cooldown protection');
