@@ -1,4 +1,4 @@
-// server.js - Multiplayer Game Server with Enhanced Anti-Farming Protection
+// server.js - Multiplayer Game Server with Health Regeneration & Advanced Features
 
 if (process.env.NODE_ENV !== 'production') require('dotenv').config();
 
@@ -131,10 +131,9 @@ const TOXIC_KEYWORDS = {
     'noob': 0.4, 'n00b': 0.4
 };
 
-// ------------------------
-// 4️⃣ Chat Filtering Functions
-// ------------------------
-
+/**
+ * Normalize text to prevent bypass attempts
+ */
 function normalizeText(text) {
     if (!text || typeof text !== 'string') return '';
     
@@ -156,6 +155,9 @@ function normalizeText(text) {
     return normalized;
 }
 
+/**
+ * Check for bypass patterns
+ */
 function checkBypassPatterns(message) {
     const lowerMessage = message.toLowerCase();
     
@@ -176,6 +178,9 @@ function checkBypassPatterns(message) {
     return false;
 }
 
+/**
+ * Check for personal information
+ */
 function containsPII(message) {
     for (const pattern of PII_PATTERNS) {
         if (pattern.test(message)) {
@@ -185,6 +190,9 @@ function containsPII(message) {
     return false;
 }
 
+/**
+ * Basic chat filtering
+ */
 function basicFilter(message) {
     if (!message || typeof message !== 'string') return false;
     
@@ -212,6 +220,9 @@ function basicFilter(message) {
     return true;
 }
 
+/**
+ * Toxicity scoring
+ */
 function scoreToxicity(message) {
     const normalized = normalizeText(message);
     let score = 0;
@@ -234,6 +245,9 @@ function scoreToxicity(message) {
     return score;
 }
 
+/**
+ * Complete moderation pipeline
+ */
 function moderateMessage(message) {
     if (!basicFilter(message)) {
         return { allowed: false, reason: 'basic_filter' };
@@ -247,6 +261,9 @@ function moderateMessage(message) {
     return { allowed: true, score: toxicityScore };
 }
 
+/**
+ * Check if message is spam
+ */
 function isSpam(playerId, message) {
     const now = Date.now();
     
@@ -275,7 +292,7 @@ function isSpam(playerId, message) {
 }
 
 // ------------------------
-// 5️⃣ Player Management
+// 4️⃣ Player Management
 // ------------------------
 
 /**
@@ -345,21 +362,6 @@ function isPlayerActive(playerId) {
 }
 
 /**
- * Check if player can be targeted (alive, visible, and exists)
- */
-function canTargetPlayer(playerId) {
-    const player = players.get(playerId);
-    if (!player) return false;
-    
-    // Cannot target dead, respawning, or invisible players
-    if (player.isDead || player.isRespawning || !player.isVisible) {
-        return false;
-    }
-    
-    return true;
-}
-
-/**
  * Update player activity
  */
 function updatePlayerActivity(playerId) {
@@ -367,51 +369,6 @@ function updatePlayerActivity(playerId) {
     if (!player) return;
     
     player.lastActivityTime = Date.now();
-    
-    // If player was marked inactive, mark them active again
-    if (!player.isActive) {
-        player.isActive = true;
-        
-        // Broadcast to all players that this player is active again
-        io.emit('playerActivityUpdate', {
-            playerId: playerId,
-            isActive: true,
-            username: player.username
-        });
-    }
-}
-
-/**
- * Check inactivity for all players
- */
-function checkAllPlayersInactivity() {
-    const now = Date.now();
-    
-    players.forEach((player, playerId) => {
-        if (player.isDead || player.isRespawning) return;
-        
-        const timeSinceLastActivity = now - player.lastActivityTime;
-        
-        // If inactive for >5 seconds and currently marked active
-        if (timeSinceLastActivity >= CONFIG.INACTIVE_THRESHOLD && player.isActive) {
-            player.isActive = false;
-            
-            // Broadcast inactivity to all players
-            io.emit('playerActivityUpdate', {
-                playerId: playerId,
-                isActive: false,
-                username: player.username,
-                inactiveFor: Math.floor(timeSinceLastActivity / 1000)
-            });
-        }
-    });
-}
-
-/**
- * Start inactivity checking
- */
-function startInactivityChecker() {
-    setInterval(checkAllPlayersInactivity, CONFIG.INACTIVE_CHECK_INTERVAL);
 }
 
 /**
@@ -441,7 +398,7 @@ function updateHitCooldown(attackerId, targetId) {
 }
 
 // ------------------------
-// 6️⃣ Health Regeneration System
+// 5️⃣ Health Regeneration System
 // ------------------------
 
 function startHealthRegen(playerId) {
@@ -479,8 +436,7 @@ function startHealthRegen(playerId) {
                 if (socket) {
                     socket.emit('healthUpdate', {
                         health: player.health,
-                        maxHealth: player.maxHealth,
-                        regen: true
+                        maxHealth: player.maxHealth
                     });
                 }
                 
@@ -488,8 +444,7 @@ function startHealthRegen(playerId) {
                 socket.broadcast.emit('playerHealthUpdate', {
                     playerId: playerId,
                     health: player.health,
-                    maxHealth: player.maxHealth,
-                    regen: true
+                    maxHealth: player.maxHealth
                 });
             }
         }
@@ -506,21 +461,17 @@ function stopHealthRegen(playerId) {
 }
 
 // ------------------------
-// 7️⃣ Death & Respawn System
+// 6️⃣ Death & Respawn System
 // ------------------------
 
 function handlePlayerDeath(playerId, killerId = null) {
     const player = players.get(playerId);
     if (!player || player.isDead) return;
     
-    // Set death state - PLAYER BECOMES INVISIBLE AND UNTARGETABLE
+    // Set death state
     player.isDead = true;
-    player.isVisible = false; // CRITICAL: Player disappears from game
-    player.isActive = false;  // Mark as inactive
+    player.isVisible = false;
     player.health = 0;
-    
-    // Stop health regeneration
-    stopHealthRegen(playerId);
     
     // Update stats
     const stats = playerStats.get(playerId);
@@ -528,7 +479,7 @@ function handlePlayerDeath(playerId, killerId = null) {
         stats.deaths++;
     }
     
-    // Handle killer rewards (only if killer is active and target was visible)
+    // Handle killer rewards (only if killer is active)
     if (killerId && killerId !== playerId && isPlayerActive(killerId)) {
         const killer = players.get(killerId);
         const killerStats = playerStats.get(killerId);
@@ -550,19 +501,17 @@ function handlePlayerDeath(playerId, killerId = null) {
                 });
                 
                 killerSocket.emit('systemMessage', {
-                    message: `💀 +${killReward} coins for eliminating ${player.username}`
+                    message: `💰 +${killReward} coins for killing ${player.username}`
                 });
             }
         }
     }
     
-    // Broadcast death to all players - PLAYER DISAPPEARS
+    // Broadcast death to all players (player disappears)
     io.emit('playerDied', {
         playerId: playerId,
         username: player.username,
-        killerId: killerId,
-        position: player.position,
-        isVisible: false // Explicitly mark as invisible
+        killerId: killerId
     });
     
     // Notify the dead player
@@ -570,12 +519,9 @@ function handlePlayerDeath(playerId, killerId = null) {
     if (playerSocket) {
         playerSocket.emit('youDied', {
             respawnTime: CONFIG.RESPAWN_TIME,
-            killerId: killerId,
-            message: '💀 You have been eliminated! Respawning...'
+            killerId: killerId
         });
     }
-    
-    console.log(`💀 Player ${player.username} (${playerId}) died. Invisible until respawn.`);
     
     // Start respawn timer
     respawnTimers.set(playerId, setTimeout(() => {
@@ -592,35 +538,25 @@ function respawnPlayer(playerId) {
     if (timer) clearTimeout(timer);
     respawnTimers.delete(playerId);
     
-    // Reset player state - PLAYER BECOMES VISIBLE AGAIN
+    // Reset player state
     player.isDead = false;
     player.isRespawning = false;
-    player.isVisible = true; // CRITICAL: Player reappears in game
+    player.isVisible = true;
     player.health = CONFIG.RESPAWN_HEALTH;
-    player.lastDamageTime = Date.now();
     
     // Reset position to spawn point (or random location)
-    player.position = { 
-        x: Math.random() * 20 - 10, 
-        y: 1.67, 
-        z: Math.random() * 20 - 10 
-    };
+    player.position = { x: Math.random() * 20 - 10, y: 1.67, z: Math.random() * 20 - 10 };
     
     // Update activity on respawn
     updatePlayerActivity(playerId);
     
-    console.log(`✨ Player ${player.username} (${playerId}) respawned. Now visible.`);
-    
-    // Broadcast respawn to all players - PLAYER REAPPEARS
+    // Broadcast respawn to all players (player reappears)
     io.emit('playerRespawned', {
         playerId: playerId,
         username: player.username,
         position: player.position,
         health: player.health,
-        maxHealth: player.maxHealth,
-        color: player.color,
-        isVisible: true, // Explicitly mark as visible
-        isActive: true
+        color: player.color
     });
     
     // Notify the player
@@ -628,8 +564,7 @@ function respawnPlayer(playerId) {
     if (playerSocket) {
         playerSocket.emit('respawnComplete', {
             position: player.position,
-            health: player.health,
-            message: '✨ You have respawned!'
+            health: player.health
         });
         
         playerSocket.emit('healthUpdate', {
@@ -643,104 +578,7 @@ function respawnPlayer(playerId) {
 }
 
 // ------------------------
-// 8️⃣ Shop System
-// ------------------------
-
-const SHOP_ITEMS = {
-    blaster: [
-        { 
-            id: 'blaster_damage', 
-            name: 'Damage Upgrade', 
-            maxLevel: 10, 
-            basePrice: 50, 
-            priceMultiplier: 1.5, 
-            stats: { damage: { base: 25, increase: 5 } } 
-        },
-        { 
-            id: 'blaster_ammo', 
-            name: 'Extended Magazine', 
-            maxLevel: 10, 
-            basePrice: 40, 
-            priceMultiplier: 1.4, 
-            stats: { maxAmmo: { base: 30, increase: 5 } } 
-        },
-        { 
-            id: 'blaster_reload', 
-            name: 'Rapid Reload', 
-            maxLevel: 10, 
-            basePrice: 60, 
-            priceMultiplier: 1.6, 
-            stats: { reloadSpeed: { base: 3, decrease: 0.2 } } 
-        }
-    ],
-    hp: [
-        { 
-            id: 'hp_max', 
-            name: 'Max HP', 
-            maxLevel: 10, 
-            basePrice: 80, 
-            priceMultiplier: 1.8, 
-            stats: { maxHP: { base: 100, increase: 20 } } 
-        },
-        { 
-            id: 'hp_regen', 
-            name: 'HP Regen', 
-            maxLevel: 8, 
-            basePrice: 70, 
-            priceMultiplier: 1.7, 
-            stats: { hpRegen: { base: 5, increase: 2 } } 
-        },
-        { 
-            id: 'hp_regen_delay', 
-            name: 'Quick Recovery', 
-            maxLevel: 5, 
-            basePrice: 90, 
-            priceMultiplier: 2.0, 
-            stats: { hpRegenDelay: { base: 4, decrease: 0.5 } } 
-        }
-    ]
-};
-
-/**
- * Get upgrade level for a player
- */
-function getUpgradeLevel(player, itemId) {
-    return player.upgrades[itemId] || 0;
-}
-
-/**
- * Apply upgrade effects to player
- */
-function applyUpgrade(player, item) {
-    const level = getUpgradeLevel(player, item.id);
-    
-    Object.entries(item.stats).forEach(([stat, data]) => {
-        if (data.increase !== undefined) {
-            player[stat] = (data.base || 0) + (level * data.increase);
-        }
-        if (data.decrease !== undefined) {
-            player[stat] = Math.max(0, (data.base || 0) - (level * data.decrease));
-        }
-    });
-    
-    // Special handling for max HP
-    if (item.id === 'hp_max') {
-        player.maxHealth = 100 + (level * 20);
-        if (player.health > player.maxHealth) {
-            player.health = player.maxHealth;
-        }
-    }
-}
-
-/**
- * Calculate upgrade price
- */
-function calculateUpgradePrice(item, currentLevel) {
-    return Math.floor(item.basePrice * Math.pow(item.priceMultiplier, currentLevel));
-}
-
-// ------------------------
-// 9️⃣ Socket.IO Event Handlers
+// 7️⃣ Socket.IO Event Handlers
 // ------------------------
 
 io.on('connection', (socket) => {
@@ -752,14 +590,10 @@ io.on('connection', (socket) => {
     // Start health regeneration system
     startHealthRegen(socket.id);
     
-    // Start inactivity checker (only once)
-    if (players.size === 1) {
-        startInactivityChecker();
-    }
-    
-    // Send initial data to player
+    // Send initial data to player - EXACT FORMAT CLIENT EXPECTS
     socket.emit('init', { 
-        playerId: socket.id, 
+        playerId: socket.id,
+        players: {},  // Empty object - client expects this
         player: {
             id: player.id,
             username: player.username,
@@ -769,28 +603,18 @@ io.on('connection', (socket) => {
             position: player.position,
             color: player.color,
             isDead: player.isDead,
-            isVisible: player.isVisible,
-            isActive: player.isActive
-        },
-        shopItems: SHOP_ITEMS,
-        config: {
-            maxUsernameLength: CONFIG.MAX_USERNAME_LENGTH,
-            maxMessageLength: CONFIG.MAX_MESSAGE_LENGTH,
-            healthRegenDelay: CONFIG.HEALTH_REGEN_DELAY,
-            respawnTime: CONFIG.RESPAWN_TIME,
-            inactiveThreshold: CONFIG.INACTIVE_THRESHOLD
+            isVisible: player.isVisible
         }
     });
     
-    // Notify other players
+    // Notify other players - EXACT FORMAT CLIENT EXPECTS
     socket.broadcast.emit('playerJoined', {
         id: socket.id,
         username: player.username,
         position: player.position,
         color: player.color,
-        health: player.health,
-        isVisible: player.isVisible,
-        isActive: player.isActive
+        health: player.health
+        // Client doesn't expect isVisible or isActive
     });
     
     // ------------------------
@@ -840,57 +664,35 @@ io.on('connection', (socket) => {
         if (data.position) player.position = data.position;
         if (data.rotation) player.rotation = data.rotation;
         
-        // Broadcast to other players (only if visible)
-        if (player.isVisible) {
-            socket.broadcast.emit('playerMoved', {
-                playerId: socket.id,
-                username: player.username,
-                position: player.position,
-                rotation: player.rotation,
-                color: player.color,
-                isVisible: player.isVisible,
-                isActive: player.isActive
-            });
-        }
+        // Broadcast to other players - EXACT FORMAT CLIENT EXPECTS
+        socket.broadcast.emit('playerMoved', {
+            playerId: socket.id,
+            position: player.position,
+            rotation: player.rotation
+            // Client doesn't expect extra properties
+        });
     });
     
     // ------------------------
     // Event: Player Attack
     // ------------------------
     socket.on('playerAttack', (data) => {
-        // CRITICAL: Cannot attack if dead or invisible
-        if (player.isDead || !player.isVisible) {
-            socket.emit('systemMessage', {
-                message: '⚠️ You cannot attack while dead!'
-            });
-            return;
-        }
+        if (player.isDead || !player.isVisible) return;
         
         updatePlayerActivity(socket.id);
         
         const { targetId, damage = 10 } = data;
         if (!targetId || targetId === socket.id) return;
         
-        // CRITICAL CHECK: Can we target this player?
-        if (!canTargetPlayer(targetId)) {
-            socket.emit('systemMessage', {
-                message: '⚠️ Cannot attack that player (dead, respawning, or invisible)'
-            });
-            return;
-        }
-        
         const target = players.get(targetId);
-        if (!target) return;
+        if (!target || !target.isVisible) return;
         
-        // Additional check for hit cooldown
-        if (!canHitPlayer(socket.id, targetId)) {
-            return;
-        }
+        if (!canHitPlayer(socket.id, targetId)) return;
         
-        // Check if target is active (not AFK)
+        // Check if target is active (not inactive for >5 seconds)
         if (!isPlayerActive(targetId)) {
             socket.emit('systemMessage', {
-                message: '⚠️ Cannot attack inactive players (AFK protection)'
+                message: '⚠️ Cannot attack inactive players'
             });
             return;
         }
@@ -915,12 +717,7 @@ io.on('connection', (socket) => {
      */
     function applyDamage(targetId, attackerId, damage) {
         const target = players.get(targetId);
-        
-        // TRIPLE CHECK: Cannot damage dead, invisible, or non-existent players
-        if (!target || target.isDead || !target.isVisible) {
-            console.log(`⚠️ Damage blocked: Target ${targetId} is dead/invisible`);
-            return;
-        }
+        if (!target || target.isDead || !target.isVisible) return;
         
         target.lastDamageTime = Date.now();
         updatePlayerActivity(targetId);
@@ -929,10 +726,10 @@ io.on('connection', (socket) => {
         const newHealth = Math.max(0, target.health - damage);
         target.health = newHealth;
         
-        // Award coins to attacker for hitting an ACTIVE, ALIVE, VISIBLE player
+        // Award coins to attacker for hitting an ACTIVE player
         const attacker = players.get(attackerId);
         const attackerStats = playerStats.get(attackerId);
-        if (attacker && attackerStats && isPlayerActive(targetId) && canTargetPlayer(targetId)) {
+        if (attacker && attackerStats && isPlayerActive(targetId)) {
             const hitReward = CONFIG.COINS_PER_HIT;
             attacker.coins += hitReward;
             attackerStats.coinsEarned += hitReward;
@@ -1000,14 +797,10 @@ io.on('connection', (socket) => {
     }
     
     // ------------------------
-    // Event: Player Hit (Legacy - keeping for compatibility)
+    // Event: Player Hit
     // ------------------------
     socket.on('playerHit', (data) => {
-        // CRITICAL: Cannot be hit if dead or invisible
-        if (player.isDead || !player.isVisible) {
-            console.log(`⚠️ Hit ignored: Player ${socket.id} is dead/invisible`);
-            return;
-        }
+        if (player.isDead || !player.isVisible) return;
         
         const { attackerId, damage = 10 } = data;
         
@@ -1149,33 +942,26 @@ io.on('connection', (socket) => {
         
         const { upgradeId } = data;
         
-        // Find the item
-        let item = null;
-        for (const category of Object.values(SHOP_ITEMS)) {
-            item = category.find(i => i.id === upgradeId);
-            if (item) break;
-        }
+        // Simple shop system - client handles most of it
+        const upgradePrices = {
+            'blaster_damage': 50,
+            'blaster_ammo': 40,
+            'blaster_reload': 60,
+            'hp_max': 80,
+            'hp_regen': 70,
+            'hp_regen_delay': 90,
+            'ability_doublejump': 500,
+            'ability_sprint': 300
+        };
         
-        if (!item) {
+        const price = upgradePrices[upgradeId];
+        if (!price) {
             socket.emit('upgradeResult', { 
                 success: false, 
                 message: 'Item not found!' 
             });
             return;
         }
-        
-        // Check current level
-        const currentLevel = getUpgradeLevel(player, upgradeId);
-        if (currentLevel >= item.maxLevel) {
-            socket.emit('upgradeResult', { 
-                success: false, 
-                message: 'Maximum level reached!' 
-            });
-            return;
-        }
-        
-        // Calculate price
-        const price = calculateUpgradePrice(item, currentLevel);
         
         // Check coins
         if (player.coins < price) {
@@ -1188,14 +974,12 @@ io.on('connection', (socket) => {
         
         // Purchase upgrade
         player.coins -= price;
-        player.upgrades[upgradeId] = currentLevel + 1;
-        applyUpgrade(player, item);
+        player.upgrades[upgradeId] = (player.upgrades[upgradeId] || 0) + 1;
         
         // Send response
         socket.emit('upgradeResult', { 
             success: true, 
             upgradeId, 
-            upgradeName: item.name,
             newLevel: player.upgrades[upgradeId],
             newCoins: player.coins
         });
@@ -1292,11 +1076,8 @@ io.on('connection', (socket) => {
         // Clear hit cooldowns
         hitCooldowns.delete(socket.id);
         
-        // Notify other players
-        io.emit('playerLeft', {
-            playerId: socket.id,
-            username: player.username
-        });
+        // Notify other players - JUST THE ID STRING
+        io.emit('playerLeft', socket.id);
         
         // Remove player data
         players.delete(socket.id);
@@ -1306,7 +1087,7 @@ io.on('connection', (socket) => {
 });
 
 // ------------------------
-// 🔟 HTTP Routes
+// 8️⃣ HTTP Routes
 // ------------------------
 app.use(express.static('public'));
 
@@ -1328,7 +1109,7 @@ app.get('/api/players', (req, res) => {
 app.get('/api/stats', (req, res) => {
     const stats = {
         totalPlayers: players.size,
-        activePlayers: Array.from(players.values()).filter(p => p.isActive && !p.isDead && p.isVisible).length,
+        activePlayers: Array.from(players.values()).filter(p => p.isActive).length,
         deadPlayers: Array.from(players.values()).filter(p => p.isDead).length,
         invisiblePlayers: Array.from(players.values()).filter(p => !p.isVisible).length,
         uptime: process.uptime(),
@@ -1345,14 +1126,14 @@ const PORT = process.env.PORT || 3000;
 
 server.listen(PORT, () => {
     console.log(`🎮 Server running on port ${PORT}`);
-    console.log('✅ Enhanced anti-farming protection active');
+    console.log('✅ Health regeneration system active');
+    console.log('✅ Player disappearance on death active');
+    console.log('✅ Anti-farming protection active');
+    console.log('✅ Chat filtering system active');
     console.log('✅ Features:');
-    console.log('   - Dead players become INVISIBLE and UNTARGETABLE');
-    console.log('   - Cannot shoot or damage dead/invisible players');
-    console.log('   - No coins from attacking dead players');
-    console.log('   - Players reappear only after respawn');
     console.log('   - 3-second health regeneration delay');
-    console.log('   - No coin rewards for hitting inactive players (AFK)');
+    console.log('   - Player disappears when dead until respawn');
+    console.log('   - No coin rewards for hitting inactive players');
     console.log('   - 5-second inactivity threshold');
     console.log('   - Multi-layer chat filtering');
     console.log('   - Hit cooldown protection');
