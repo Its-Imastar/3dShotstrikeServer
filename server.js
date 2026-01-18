@@ -1,6 +1,4 @@
-// server.js - COPPA-Compliant with FREE Gemini AI + Bad Word List
-// Safe for users under 13
-
+// server.js - Updated for Multiplayer Ability System
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
@@ -22,10 +20,8 @@ const io = require('socket.io')(http, {
 // Initialize Google Gemini AI (FREE TIER)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
-// Validate API key on startup
 if (!process.env.GEMINI_API_KEY) {
     console.warn('⚠️  GEMINI_API_KEY not set. Using basic filter only.');
-    console.log('   Get your FREE key: https://aistudio.google.com/app/apikey');
 } else {
     console.log('✅ Gemini API key configured');
 }
@@ -215,9 +211,35 @@ Your response (SAFE or UNSAFE):`;
 
 // Player data storage
 const players = {};
-const playerLoadouts = {}; // Stores equipped guns/abilities/perks
+const playerLoadouts = {};
 const playerCoins = {};
+const playerHealth = {};
+const playerShields = {};
+const abilityCooldowns = {};
+const playerScores = {};
+const playerKills = {};
+const playerDeaths = {};
 const messageHistory = {};
+
+// Ability cooldowns (in seconds)
+const ABILITY_COOLDOWNS = {
+    'ability_instant_reload': 20,
+    'ability_warriors_wrath': 30,
+    'ability_gun_bash': 35,
+    'ability_rock_shield': 25,
+    'ability_crystal_barrier': 35,
+    'ability_slateskin': 30,
+    'ability_instant_health': 25,
+    'ability_super_regen': 35,
+    'ability_healing_hibernation': 30,
+    'ability_lifesteal': 25,
+    'ability_uplift': 15,
+    'ability_dash': 20,
+    'ability_invisibility': 40,
+    'ability_super_sprint': 25,
+    'ability_rejuvenating_dash': 30,
+    'ability_grapple': 22
+};
 
 // Gun definitions matching client
 const GUNS = {
@@ -231,6 +253,9 @@ const GUNS = {
     'gun_shotgun': { damage: 18, firerate: 1250, ammo: 7, reloadTime: 0.8, spread: 8, pelletCount: 6, speed: 10 },
     'gun_marksman': { damage: 50, firerate: 1300, ammo: 9, reloadTime: 3, speed: 0 }
 };
+
+// Ability effects server-side tracking
+const activeAbilities = {};
 
 // Spam detection
 function isSpam(playerId, message) {
@@ -276,6 +301,30 @@ function initializePlayerData(playerId) {
     if (!playerCoins[playerId]) {
         playerCoins[playerId] = 500;
     }
+    
+    if (!playerHealth[playerId]) {
+        playerHealth[playerId] = 100;
+    }
+    
+    if (!playerShields[playerId]) {
+        playerShields[playerId] = 0;
+    }
+    
+    if (!playerScores[playerId]) {
+        playerScores[playerId] = 0;
+    }
+    
+    if (!playerKills[playerId]) {
+        playerKills[playerId] = 0;
+    }
+    
+    if (!playerDeaths[playerId]) {
+        playerDeaths[playerId] = 0;
+    }
+    
+    if (!abilityCooldowns[playerId]) {
+        abilityCooldowns[playerId] = {};
+    }
 }
 
 function calculateDamage(shooterId, targetId) {
@@ -289,6 +338,11 @@ function calculateDamage(shooterId, targetId) {
     const gun = GUNS[shooterLoadout.equippedGun];
     let damage = gun.damage;
     
+    // Apply Warrior's Wrath multiplier if active
+    if (activeAbilities[shooterId] && activeAbilities[shooterId]['warriorsWrath']) {
+        damage *= 3; // Triple damage
+    }
+    
     // Apply perk effects
     if (targetLoadout && targetLoadout.equippedPerk === 'perk_tank') {
         // Tank perk gives damage reduction
@@ -297,14 +351,32 @@ function calculateDamage(shooterId, targetId) {
     
     // Apply survivor perk (if target is low health)
     if (targetLoadout && targetLoadout.equippedPerk === 'perk_survivor') {
-        const targetPlayer = players[targetId];
-        if (targetPlayer && targetPlayer.health <= 25) {
+        if (playerHealth[targetId] <= 25) {
             // Survivor perk activates - no damage taken for 1 second
-            // We'll handle this in the hit handler
+            const lastDamageTime = players[targetId]?.lastDamageTime || 0;
+            if (Date.now() - lastDamageTime < 1000) {
+                return 0; // No damage during invincibility
+            }
         }
     }
     
     return Math.round(damage);
+}
+
+function checkAbilityCooldown(playerId, abilityId) {
+    const now = Date.now();
+    const cooldown = ABILITY_COOLDOWNS[abilityId] || 10;
+    
+    if (!abilityCooldowns[playerId][abilityId]) {
+        return true; // Never used before
+    }
+    
+    const timeSinceLastUse = now - abilityCooldowns[playerId][abilityId];
+    return timeSinceLastUse >= (cooldown * 1000);
+}
+
+function setAbilityCooldown(playerId, abilityId) {
+    abilityCooldowns[playerId][abilityId] = Date.now();
 }
 
 io.on('connection', (socket) => {
@@ -321,7 +393,9 @@ io.on('connection', (socket) => {
         score: 0,
         kills: 0,
         deaths: 0,
-        lastDamageTime: Date.now()
+        lastDamageTime: Date.now(),
+        invisible: false,
+        lastMoveTime: Date.now()
     };
     
     initializePlayerData(socket.id);
@@ -335,7 +409,9 @@ io.on('connection', (socket) => {
     // Send coins and loadout
     socket.emit('playerData', {
         coins: playerCoins[socket.id],
-        loadout: playerLoadouts[socket.id]
+        loadout: playerLoadouts[socket.id],
+        health: playerHealth[socket.id],
+        shield: playerShields[socket.id]
     });
     
     // Notify other players
@@ -357,14 +433,13 @@ io.on('connection', (socket) => {
             ...loadout
         };
         
-        // Broadcast to other players (optional - for visual effects)
         socket.broadcast.emit('playerLoadoutUpdated', {
             playerId: socket.id,
             loadout: playerLoadouts[socket.id]
         });
     });
     
-    // Purchase item (client-side shop, server just validates and deducts coins)
+    // Purchase item
     socket.on('purchaseItem', (data) => {
         const { itemId, cost } = data;
         const playerId = socket.id;
@@ -377,7 +452,6 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Deduct coins
         playerCoins[playerId] -= cost;
         
         socket.emit('purchaseResult', {
@@ -391,20 +465,33 @@ io.on('connection', (socket) => {
             coins: playerCoins[playerId]
         });
         
-        console.log(`Player ${playerId} purchased ${itemId} for ${cost} coins`);
+        console.log(`💰 Player ${playerId} purchased ${itemId} for ${cost} coins`);
     });
     
     // Movement
     socket.on('move', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].position = data.position;
-            players[socket.id].rotation = data.rotation;
-            socket.broadcast.emit('playerMoved', {
-                playerId: socket.id,
-                position: data.position,
-                rotation: data.rotation
-            });
+        const playerId = socket.id;
+        if (!players[playerId]) return;
+        
+        players[playerId].position = data.position;
+        players[playerId].rotation = data.rotation;
+        players[playerId].lastMoveTime = Date.now();
+        
+        // Update server-side health/shield
+        if (data.health !== undefined) {
+            playerHealth[playerId] = data.health;
         }
+        if (data.shield !== undefined) {
+            playerShields[playerId] = data.shield;
+        }
+        
+        socket.broadcast.emit('playerMoved', {
+            playerId: playerId,
+            position: data.position,
+            rotation: data.rotation,
+            health: playerHealth[playerId],
+            shield: playerShields[playerId]
+        });
     });
     
     // Shooting
@@ -418,14 +505,162 @@ io.on('connection', (socket) => {
     
     // Ability used
     socket.on('abilityUsed', (data) => {
+        const playerId = socket.id;
+        const abilityId = data.abilityId;
+        
+        // Check cooldown
+        if (!checkAbilityCooldown(playerId, abilityId)) {
+            socket.emit('abilityFailed', {
+                abilityId: abilityId,
+                message: 'Ability on cooldown'
+            });
+            return;
+        }
+        
+        // Set cooldown
+        setAbilityCooldown(playerId, abilityId);
+        
+        // Track active abilities
+        if (!activeAbilities[playerId]) {
+            activeAbilities[playerId] = {};
+        }
+        
+        // Handle specific abilities
+        switch (abilityId) {
+            case 'ability_rock_shield':
+            case 'ability_crystal_barrier':
+            case 'ability_slateskin':
+                // These abilities grant shields - track on server
+                const shieldAmount = data.shieldApplied || 0;
+                playerShields[playerId] = shieldAmount;
+                activeAbilities[playerId][abilityId] = {
+                    active: true,
+                    startTime: Date.now(),
+                    shieldAmount: shieldAmount
+                };
+                break;
+                
+            case 'ability_invisibility':
+                players[playerId].invisible = true;
+                activeAbilities[playerId].invisibility = {
+                    active: true,
+                    startTime: Date.now()
+                };
+                // Make invisible after 0.5 seconds for effect
+                setTimeout(() => {
+                    socket.broadcast.emit('playerInvisible', {
+                        playerId: playerId,
+                        invisible: true
+                    });
+                }, 500);
+                break;
+                
+            case 'ability_gun_bash':
+                // Apply movement and damage to nearby players
+                const nearbyPlayers = Object.keys(players).filter(id => {
+                    if (id === playerId) return false;
+                    const player = players[id];
+                    const distance = Math.sqrt(
+                        Math.pow(player.position.x - data.position.x, 2) +
+                        Math.pow(player.position.z - data.position.z, 2)
+                    );
+                    return distance < 5; // 5 unit radius
+                });
+                
+                nearbyPlayers.forEach(targetId => {
+                    // Apply 40 damage to each nearby player
+                    applyAbilityDamage(playerId, targetId, 40);
+                    
+                    // Knockback effect
+                    socket.to(targetId).emit('abilityHit', {
+                        abilityId: abilityId,
+                        damage: 40,
+                        attackerId: playerId,
+                        knockback: true
+                    });
+                });
+                break;
+                
+            case 'ability_grapple':
+                // Find nearest enemy in range
+                let nearestEnemy = null;
+                let nearestDist = Infinity;
+                
+                Object.keys(players).forEach(id => {
+                    if (id === playerId) return;
+                    const player = players[id];
+                    const distance = Math.sqrt(
+                        Math.pow(player.position.x - data.position.x, 2) +
+                        Math.pow(player.position.z - data.position.z, 2)
+                    );
+                    
+                    if (distance < 30 && distance < nearestDist) {
+                        nearestEnemy = { id, player };
+                        nearestDist = distance;
+                    }
+                });
+                
+                if (nearestEnemy) {
+                    // Apply grapple damage
+                    applyAbilityDamage(playerId, nearestEnemy.id, 25);
+                    
+                    // Notify both players
+                    socket.to(nearestEnemy.id).emit('abilityHit', {
+                        abilityId: abilityId,
+                        damage: 25,
+                        attackerId: playerId,
+                        grapple: true
+                    });
+                }
+                break;
+        }
+        
+        // Broadcast ability use to all players
         socket.broadcast.emit('playerUsedAbility', {
-            playerId: socket.id,
-            abilityId: data.abilityId,
-            abilityName: data.abilityName
+            playerId: playerId,
+            abilityId: abilityId,
+            abilityName: data.abilityName,
+            position: data.position,
+            invisible: abilityId === 'ability_invisibility',
+            movementVector: data.movementVector,
+            damageAmount: data.damageAmount
         });
+        
+        console.log(`⚡ Player ${playerId} used ability: ${abilityId}`);
     });
     
-    // Player hit
+    function applyAbilityDamage(attackerId, targetId, damage) {
+        if (!players[targetId] || !playerHealth[targetId]) return;
+        
+        // Check shield first
+        if (playerShields[targetId] > 0) {
+            if (playerShields[targetId] >= damage) {
+                playerShields[targetId] -= damage;
+            } else {
+                const remainingDamage = damage - playerShields[targetId];
+                playerShields[targetId] = 0;
+                playerHealth[targetId] -= remainingDamage;
+            }
+        } else {
+            playerHealth[targetId] -= damage;
+        }
+        
+        // Update target player
+        io.to(targetId).emit('playerHit', {
+            targetId: targetId,
+            health: playerHealth[targetId],
+            shield: playerShields[targetId],
+            damage: damage,
+            shooterId: attackerId
+        });
+        
+        // Check for death
+        if (playerHealth[targetId] <= 0) {
+            handlePlayerDeath(targetId, attackerId);
+        }
+    }
+    
+    // Player hit (bullet damage)
     socket.on('hit', (data) => {
         const targetId = data.targetId;
         const shooterId = socket.id;
@@ -434,39 +669,48 @@ io.on('connection', (socket) => {
             return;
         }
         
-        // Check if survivor perk is active (invincibility for 1s when low health)
+        // Check if survivor perk is active
         const targetLoadout = playerLoadouts[targetId];
-        const targetPlayer = players[targetId];
-        
         if (targetLoadout && targetLoadout.equippedPerk === 'perk_survivor' && 
-            targetPlayer.health <= 25 && Date.now() - targetPlayer.lastDamageTime < 1000) {
+            playerHealth[targetId] <= 25 && Date.now() - players[targetId].lastDamageTime < 1000) {
             // Survivor perk active - no damage
             return;
         }
         
-        // Calculate damage
-        const damage = calculateDamage(shooterId, targetId);
-        
-        // Apply damage to shield first
-        if (targetPlayer.shield > 0) {
-            if (targetPlayer.shield >= damage) {
-                targetPlayer.shield -= damage;
-            } else {
-                const remainingDamage = damage - targetPlayer.shield;
-                targetPlayer.shield = 0;
-                targetPlayer.health -= remainingDamage;
-            }
-        } else {
-            targetPlayer.health -= damage;
+        // Check if target is invisible (invisibility ability)
+        if (players[targetId].invisible) {
+            // Invisibility breaks when hit
+            players[targetId].invisible = false;
+            io.emit('playerInvisible', {
+                playerId: targetId,
+                invisible: false
+            });
         }
         
-        targetPlayer.lastDamageTime = Date.now();
+        // Calculate damage
+        const damage = calculateDamage(shooterId, targetId);
+        if (damage <= 0) return;
+        
+        // Check shield first
+        if (playerShields[targetId] > 0) {
+            if (playerShields[targetId] >= damage) {
+                playerShields[targetId] -= damage;
+            } else {
+                const remainingDamage = damage - playerShields[targetId];
+                playerShields[targetId] = 0;
+                playerHealth[targetId] -= remainingDamage;
+            }
+        } else {
+            playerHealth[targetId] -= damage;
+        }
+        
+        players[targetId].lastDamageTime = Date.now();
         
         // Update target player
         io.to(targetId).emit('playerHit', {
             targetId: targetId,
-            health: targetPlayer.health,
-            shield: targetPlayer.shield,
+            health: playerHealth[targetId],
+            shield: playerShields[targetId],
             damage: damage,
             shooterId: shooterId
         });
@@ -479,9 +723,11 @@ io.on('connection', (socket) => {
         });
         
         // Check for death
-        if (targetPlayer.health <= 0) {
+        if (playerHealth[targetId] <= 0) {
             handlePlayerDeath(targetId, shooterId);
         }
+        
+        console.log(`🔫 Player ${shooterId} hit ${targetId} for ${damage} damage`);
     });
     
     function handlePlayerDeath(targetId, killerId) {
@@ -491,36 +737,42 @@ io.on('connection', (socket) => {
         if (!targetPlayer || !killerPlayer) return;
         
         // Reset dead player
-        targetPlayer.health = 100;
-        targetPlayer.shield = 0;
+        playerHealth[targetId] = 100;
+        playerShields[targetId] = 0;
         targetPlayer.position = { x: 0, y: 1.67, z: 0 };
         targetPlayer.rotation = { x: 0, y: 0 };
-        targetPlayer.deaths += 1;
+        targetPlayer.invisible = false;
+        playerDeaths[targetId] = (playerDeaths[targetId] || 0) + 1;
         
         // Update killer
-        killerPlayer.score += 100;
-        killerPlayer.kills += 1;
-        playerCoins[killerId] += 50; // Kill reward
+        playerScores[killerId] = (playerScores[killerId] || 0) + 100;
+        playerKills[killerId] = (playerKills[killerId] || 0) + 1;
+        playerCoins[killerId] = (playerCoins[killerId] || 0) + 50; // Kill reward
         
         // Apply lifestealer perk
         const killerLoadout = playerLoadouts[killerId];
         if (killerLoadout && killerLoadout.equippedPerk === 'perk_lifestealer') {
-            killerPlayer.health = Math.min(100, killerPlayer.health + 20);
-            // Speed boost handled client-side
+            playerHealth[killerId] = Math.min(100, playerHealth[killerId] + 20);
+            
+            // Send health update to killer
+            io.to(killerId).emit('playerHealthUpdate', {
+                playerId: killerId,
+                health: playerHealth[killerId]
+            });
         }
         
         // Broadcast death
         io.emit('playerDied', {
             targetId: targetId,
             killerId: killerId,
-            killerScore: killerPlayer.score
+            killerScore: playerScores[killerId]
         });
         
         // Update killer's score and coins
         io.to(killerId).emit('scoreUpdate', {
             playerId: killerId,
-            score: killerPlayer.score,
-            kills: killerPlayer.kills
+            score: playerScores[killerId],
+            kills: playerKills[killerId]
         });
         
         io.to(killerId).emit('coinUpdate', {
@@ -534,41 +786,51 @@ io.on('connection', (socket) => {
             shield: 0
         });
         
-        console.log(`Player ${killerId} killed ${targetId}`);
+        console.log(`💀 Player ${killerId} killed ${targetId}`);
     }
     
-    // Shield activation (for abilities like Rock Shield, Slateskin)
+    // Shield activation
     socket.on('activateShield', (data) => {
         const playerId = socket.id;
-        const player = players[playerId];
         
-        if (!player) return;
-        
-        player.shield = data.shieldAmount || 0;
+        playerShields[playerId] = data.shieldAmount || 0;
         
         // Broadcast to other players for visual effects
         socket.broadcast.emit('playerShieldActivated', {
             playerId: playerId,
-            shieldAmount: player.shield
+            shieldAmount: playerShields[playerId]
         });
         
         io.to(playerId).emit('shieldUpdate', {
-            shield: player.shield
+            shield: playerShields[playerId]
         });
     });
     
     // Health update (for healing abilities)
     socket.on('healPlayer', (data) => {
         const playerId = socket.id;
-        const player = players[playerId];
         
-        if (!player) return;
-        
-        player.health = Math.min(100, player.health + (data.amount || 0));
+        playerHealth[playerId] = Math.min(100, playerHealth[playerId] + (data.amount || 0));
         
         io.to(playerId).emit('playerHealthUpdate', {
             playerId: playerId,
-            health: player.health
+            health: playerHealth[playerId]
+        });
+    });
+    
+    // Ability cooldown check
+    socket.on('checkAbilityCooldown', (data) => {
+        const playerId = socket.id;
+        const abilityId = data.abilityId;
+        
+        const isReady = checkAbilityCooldown(playerId, abilityId);
+        
+        socket.emit('abilityCooldownResponse', {
+            abilityId: abilityId,
+            ready: isReady,
+            cooldownRemaining: isReady ? 0 : 
+                Math.ceil((ABILITY_COOLDOWNS[abilityId] * 1000 - 
+                    (Date.now() - abilityCooldowns[playerId][abilityId])) / 1000)
         });
     });
     
@@ -629,11 +891,18 @@ io.on('connection', (socket) => {
         delete players[socket.id];
         delete playerLoadouts[socket.id];
         delete playerCoins[socket.id];
+        delete playerHealth[socket.id];
+        delete playerShields[socket.id];
+        delete abilityCooldowns[socket.id];
+        delete playerScores[socket.id];
+        delete playerKills[socket.id];
+        delete playerDeaths[socket.id];
+        delete activeAbilities[socket.id];
         delete messageHistory[socket.id];
     });
     
     // Passive coin generation (every minute)
-    setInterval(() => {
+    const coinInterval = setInterval(() => {
         if (players[socket.id]) {
             playerCoins[socket.id] += 10;
             socket.emit('coinUpdate', {
@@ -642,6 +911,11 @@ io.on('connection', (socket) => {
             });
         }
     }, 60000);
+    
+    // Clear interval on disconnect
+    socket.on('disconnect', () => {
+        clearInterval(coinInterval);
+    });
 });
 
 const PORT = process.env.PORT || 3000;
@@ -649,6 +923,8 @@ http.listen(PORT, () => {
     console.log(`🎮 Server running on port ${PORT}`);
     console.log('👶 COPPA-COMPLIANT MODE: Safe for users under 13');
     console.log('✅ Multi-layer chat filtering active');
-    console.log('✅ New shop system: Guns, Abilities, Perks');
-    console.log('✅ Loadout system: 1 Gun, 2 Abilities, 1 Perk');
+    console.log('✅ Enhanced ability system with server-side tracking');
+    console.log('✅ Shield system with proper multiplayer sync');
+    console.log('✅ Ability cooldown validation');
+    console.log('✅ Invisibility and special effects tracking');
 });
