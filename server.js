@@ -393,30 +393,6 @@ io.on('connection', (socket) => {
         
         console.log(`Player ${playerId} purchased ${itemId} for ${cost} coins`);
     });
-socket.on('requestLeaderboard', () => {
-    const leaderboardData = [];
-    
-    // Collect data from all players
-    Object.keys(players).forEach(playerId => {
-        const player = players[playerId];
-        const playerData = {
-            id: playerId,
-            username: player.username,
-            score: player.score || 0, // FIXED: Use player.score instead of playerScores[playerId]
-            kills: player.kills || 0, // FIXED: Use player.kills instead of playerKills[playerId]
-            deaths: player.deaths || 0, // FIXED: Use player.deaths instead of playerDeaths[playerId]
-            ping: 0, // You can calculate actual ping if needed
-            isOnline: true,
-            isYou: playerId === socket.id
-        };
-        leaderboardData.push(playerData);
-    });
-    
-    // Send to requesting player
-    socket.emit('leaderboardData', {
-        players: leaderboardData.sort((a, b) => b.score - a.score)
-    });
-});
     
     // Movement
     socket.on('move', (data) => {
@@ -659,7 +635,7 @@ socket.on('requestLeaderboard', () => {
     // Passive coin generation (every minute)
     setInterval(() => {
         if (players[socket.id]) {
-            playerCoins[socket.id] += 1;
+            playerCoins[socket.id] += 10;
             socket.emit('coinUpdate', {
                 playerId: socket.id,
                 coins: playerCoins[socket.id]
