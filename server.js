@@ -556,7 +556,85 @@ io.on('connection', (socket) => {
             shield: player.shield
         });
     });
-    
+    // ========================================
+// ADMIN CONSOLE HANDLERS
+// Add this code to your server.js before the disconnect handler
+// ========================================
+
+    // ADMIN ACTIONS
+    socket.on('adminAction', (data) => {
+        const { type, targetId, amount } = data;
+        
+        switch(type) {
+            case 'heal':
+                if (players[targetId]) {
+                    players[targetId].health = 100;
+                    players[targetId].shield = 0;
+                    io.to(targetId).emit('playerHealthUpdate', {
+                        playerId: targetId,
+                        health: 100
+                    });
+                    io.to(targetId).emit('shieldUpdate', {
+                        shield: 0
+                    });
+                    console.log(`✨ Admin healed player ${targetId}`);
+                }
+                break;
+                
+            case 'kill':
+                if (players[targetId]) {
+                    players[targetId].health = 0;
+                    handlePlayerDeath(targetId, socket.id);
+                    console.log(`💀 Admin killed player ${targetId}`);
+                }
+                break;
+                
+            case 'giveCoins':
+                if (playerCoins[targetId] !== undefined) {
+                    playerCoins[targetId] += amount || 0;
+                    io.to(targetId).emit('coinUpdate', {
+                        playerId: targetId,
+                        coins: playerCoins[targetId]
+                    });
+                    console.log(`💰 Admin gave ${amount} coins to ${targetId}`);
+                }
+                break;
+                
+            case 'setCoins':
+                if (playerCoins[targetId] !== undefined) {
+                    playerCoins[targetId] = amount || 0;
+                    io.to(targetId).emit('coinUpdate', {
+                        playerId: targetId,
+                        coins: playerCoins[targetId]
+                    });
+                    console.log(`💰 Admin set ${targetId} coins to ${amount}`);
+                }
+                break;
+                
+            case 'setHealth':
+                if (players[targetId]) {
+                    players[targetId].health = Math.max(0, Math.min(100, amount || 100));
+                    io.to(targetId).emit('playerHealthUpdate', {
+                        playerId: targetId,
+                        health: players[targetId].health
+                    });
+                    console.log(`❤️ Admin set ${targetId} health to ${amount}`);
+                }
+                break;
+        }
+    });
+
+// ========================================
+// INSTALLATION INSTRUCTIONS:
+// ========================================
+// 1. Open your server.js file
+// 2. Find the line that says: socket.on('disconnect', () => {
+// 3. Add the admin handler code ABOVE that line
+// 4. Save the file and restart your server
+// 5. Open admin-console.html in your browser
+// 6. Enter your server URL (default: http://localhost:3000)
+// 7. Click "Connect"
+// ========================================
     // Health update (for healing abilities)
     socket.on('healPlayer', (data) => {
         const playerId = socket.id;
