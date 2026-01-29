@@ -557,25 +557,22 @@ io.on('connection', (socket) => {
         });
     });
     // ========================================
+// ========================================
 // ADMIN CONSOLE HANDLERS
 // Add this code to your server.js before the disconnect handler
 // ========================================
 
     // ADMIN ACTIONS
     socket.on('adminAction', (data) => {
-        const { type, targetId, amount } = data;
+        const { type, targetId, amount, position, duration, enabled, multiplier } = data;
         
         switch(type) {
             case 'heal':
                 if (players[targetId]) {
                     players[targetId].health = 100;
                     players[targetId].shield = 0;
-                    io.to(targetId).emit('playerHealthUpdate', {
-                        playerId: targetId,
+                    io.to(targetId).emit('adminHeal', {
                         health: 100
-                    });
-                    io.to(targetId).emit('shieldUpdate', {
-                        shield: 0
                     });
                     console.log(`✨ Admin healed player ${targetId}`);
                 }
@@ -614,15 +611,89 @@ io.on('connection', (socket) => {
             case 'setHealth':
                 if (players[targetId]) {
                     players[targetId].health = Math.max(0, Math.min(100, amount || 100));
-                    io.to(targetId).emit('playerHealthUpdate', {
-                        playerId: targetId,
+                    io.to(targetId).emit('adminSetHealth', {
                         health: players[targetId].health
                     });
                     console.log(`❤️ Admin set ${targetId} health to ${amount}`);
                 }
                 break;
+                
+            case 'teleport':
+                if (players[targetId] && position) {
+                    players[targetId].position = position;
+                    io.to(targetId).emit('adminTeleport', {
+                        position: position
+                    });
+                    console.log(`🌀 Admin teleported ${targetId} to spawn`);
+                }
+                break;
+                
+            case 'freeze':
+                if (players[targetId]) {
+                    io.to(targetId).emit('adminFreeze', {
+                        duration: duration || 5000
+                    });
+                    console.log(`❄️ Admin froze ${targetId} for ${duration}ms`);
+                }
+                break;
+                
+            case 'kick':
+                if (players[targetId]) {
+                    io.to(targetId).emit('adminKick', {
+                        reason: 'Kicked by admin'
+                    });
+                    setTimeout(() => {
+                        io.sockets.sockets.get(targetId)?.disconnect(true);
+                    }, 1000);
+                    console.log(`🚫 Admin kicked ${targetId}`);
+                }
+                break;
+                
+            case 'godMode':
+                if (players[targetId]) {
+                    io.to(targetId).emit('adminGodMode', {
+                        enabled: enabled
+                    });
+                    console.log(`👑 Admin ${enabled ? 'enabled' : 'disabled'} god mode for ${targetId}`);
+                }
+                break;
+                
+            case 'resetStats':
+                if (players[targetId]) {
+                    players[targetId].score = 0;
+                    players[targetId].kills = 0;
+                    players[targetId].deaths = 0;
+                    io.to(targetId).emit('adminResetStats', {
+                        score: 0,
+                        kills: 0,
+                        deaths: 0
+                    });
+                    console.log(`📊 Admin reset stats for ${targetId}`);
+                }
+                break;
+                
+            case 'speedMultiplier':
+                if (players[targetId]) {
+                    io.to(targetId).emit('adminSpeedMultiplier', {
+                        multiplier: multiplier || 1.0
+                    });
+                    console.log(`⚡ Admin set ${targetId} speed to ${multiplier}x`);
+                }
+                break;
         }
     });
+
+// ========================================
+// INSTALLATION INSTRUCTIONS:
+// ========================================
+// 1. Open your server.js file
+// 2. Find the line that says: socket.on('disconnect', () => {
+// 3. Add the admin handler code ABOVE that line
+// 4. Save the file and restart your server
+// 5. Open admin-console.html in your browser
+// 6. Enter your server URL (default: http://localhost:3000)
+// 7. Click "Connect"
+// ========================================
 
 // ========================================
 // INSTALLATION INSTRUCTIONS:
