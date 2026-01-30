@@ -1,0 +1,8 @@
+name = "3d-shooter-ban-system"
+main = "src/index.js"
+compatibility_date = "2024-04-03"
+
+[[d1_databases]]
+binding = "BANS_DB"
+database_name = "bans-database"
+database_id = "10823ea9-356a-4771-935f-23d94709b173" # Get this from Cloudflare dashboard
