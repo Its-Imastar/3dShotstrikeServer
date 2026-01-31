@@ -273,8 +273,9 @@ function initializePlayerData(playerId) {
         };
     }
     
+    // Don't reset coins, let client sync them
     if (!playerCoins[playerId]) {
-        playerCoins[playerId] = 500;
+        playerCoins[playerId] = 0; // Start with 0, will be updated by client
     }
 }
 
@@ -349,7 +350,19 @@ io.on('connection', (socket) => {
             username: username
         });
     });
+    // Coin sync handler
+socket.on('syncCoins', (clientCoins) => {
+    const playerId = socket.id;
+    playerCoins[playerId] = clientCoins;
     
+    console.log(`💰 Player ${playerId} coins synced: ${clientCoins}`);
+    
+    // Send confirmation
+    socket.emit('coinUpdate', {
+        playerId: playerId,
+        coins: playerCoins[playerId]
+    });
+});
     // Loadout update (client sends their equipped items)
     socket.on('updateLoadout', (loadout) => {
         playerLoadouts[socket.id] = {
