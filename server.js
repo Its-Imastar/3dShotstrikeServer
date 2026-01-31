@@ -4,7 +4,7 @@
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
-//const sqlite3 = require('sqlite3').verbose();
+
 const express = require('express');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const fs = require('fs');
@@ -18,162 +18,6 @@ const io = require('socket.io')(http, {
         methods: ["GET", "POST"]
     }
 });
-
-class IPBanSystem {
-    constructor() {
-        this.bannedIPs = new Map();
-        this.accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
-        this.apiToken = process.env.CLOUDFLARE_API_TOKEN;
-        this.databaseId = '10823ea9-356a-4771-935f-23d94709b173';
-        this.initDatabase();
-    }
-
-    async initDatabase() {
-        try {
-            // Create table if it doesn't exist
-            await this.queryD1(`
-                CREATE TABLE IF NOT EXISTS banned_ips (
-                    id INTEGER PRIMARY KEY,
-                    ip TEXT NOT NULL UNIQUE,
-                    username TEXT,
-                    reason TEXT,
-                    timestamp INTEGER,
-                    admin_id TEXT,
-                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                )
-            `);
-            
-            await this.loadBans();
-            console.log('✅ Cloudflare D1 connected via API');
-        } catch (error) {
-            console.warn('⚠️ Could not connect to Cloudflare D1:', error.message);
-            console.log('⚠️ Using in-memory bans as fallback');
-        }
-    }
-
-    async queryD1(sql, params = []) {
-        if (!this.accountId || !this.apiToken) {
-            throw new Error('Cloudflare credentials not configured');
-        }
-        
-        const response = await fetch(
-            `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`,
-            {
-                method: 'POST',
-                headers: {
-                    'Authorization': `Bearer ${this.apiToken}`,
-                    'Content-Type': 'application/json'
-                },
-                body: JSON.stringify({
-                    sql: sql,
-                    params: params
-                })
-            }
-        );
-        
-        if (!response.ok) {
-            throw new Error(`D1 API error: ${response.statusText}`);
-        }
-        
-        const data = await response.json();
-        
-        if (!data.success) {
-            throw new Error(`D1 query failed: ${JSON.stringify(data.errors)}`);
-        }
-        
-        return data.result;
-    }
-
-    async loadBans() {
-        try {
-            const result = await this.queryD1('SELECT * FROM banned_ips');
-            
-            if (result && result[0] && result[0].results) {
-                result[0].results.forEach(ban => {
-                    this.bannedIPs.set(ban.ip, {
-                        username: ban.username,
-                        reason: ban.reason,
-                        timestamp: ban.timestamp,
-                        adminId: ban.admin_id
-                    });
-                });
-                console.log(`✅ Loaded ${this.bannedIPs.size} banned IPs from Cloudflare D1`);
-            }
-        } catch (error) {
-            console.warn('⚠️ Could not load banned IPs:', error.message);
-        }
-    }
-
-    async banIP(ip, username, reason, adminId) {
-        try {
-            // Store in memory
-            this.bannedIPs.set(ip, {
-                username: username || 'Unknown',
-                reason: reason || 'No reason provided',
-                timestamp: Date.now(),
-                adminId: adminId || 'system'
-            });
-            
-            // Store in D1
-            await this.queryD1(
-                `INSERT OR REPLACE INTO banned_ips (ip, username, reason, timestamp, admin_id) VALUES (?, ?, ?, ?, ?)`,
-                [ip, username || 'Unknown', reason || 'No reason provided', Date.now(), adminId || 'system']
-            );
-            
-            console.log(`🚫 IP ${ip} banned by ${adminId} - Reason: ${reason}`);
-            return true;
-        } catch (error) {
-            console.error('Error banning IP:', error.message);
-            // Still return true because memory ban succeeded
-            return true;
-        }
-    }
-
-    async unbanIP(ip) {
-        try {
-            this.bannedIPs.delete(ip);
-            
-            await this.queryD1(`DELETE FROM banned_ips WHERE ip = ?`, [ip]);
-            
-            console.log(`✅ IP ${ip} unbanned`);
-            return true;
-        } catch (error) {
-            console.error('Error unbanning IP:', error.message);
-            return false;
-        }
-    }
-
-    isIPBanned(ip) {
-        return this.bannedIPs.has(ip);
-    }
-
-    getBanInfo(ip) {
-        return this.bannedIPs.get(ip);
-    }
-
-    async getAllBannedIPs() {
-        try {
-            const result = await this.queryD1('SELECT * FROM banned_ips ORDER BY timestamp DESC');
-            
-            if (result && result[0] && result[0].results) {
-                return result[0].results;
-            }
-        } catch (error) {
-            console.error('Error getting banned IPs:', error.message);
-        }
-        
-        // Fallback to memory
-        return Array.from(this.bannedIPs.entries()).map(([ip, info]) => ({
-            ip,
-            username: info.username,
-            reason: info.reason,
-            timestamp: info.timestamp,
-            admin_id: info.adminId
-        }));
-    }
-}
-
-const ipBanSystem = new IPBanSystem();
 
 // Initialize Google Gemini AI (FREE TIER)
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
@@ -464,31 +308,11 @@ function calculateDamage(shooterId, targetId) {
 }
 
 io.on('connection', (socket) => {
-        const ip = socket.handshake.address;
+    console.log('✅ Player connected:', socket.id);
     
-    // Check if IP is banned
-    if (ipBanSystem.isIPBanned(ip)) {
-        const banInfo = ipBanSystem.getBanInfo(ip);
-        console.log(`🚫 Blocked connection from banned IP: ${ip}`);
-        
-        socket.emit('connectionRefused', {
-            reason: 'You are banned from this server',
-            banReason: banInfo.reason
-        });
-        
-        setTimeout(() => {
-            socket.disconnect(true);
-        }, 1000);
-        return;
-    }
-    
-    console.log('✅ Player connected:', socket.id, 'IP:', ip);
-    
- 
     players[socket.id] = {
         id: socket.id,
-        username: '',
-        ip: ip,
+        username: 'Guest',
         position: { x: 0, y: 1.67, z: 0 },
         rotation: { x: 0, y: 0 },
         color: Math.floor(Math.random() * 0xffffff),
@@ -739,7 +563,7 @@ io.on('connection', (socket) => {
 // ========================================
 
     // ADMIN ACTIONS
-    socket.on('adminAction', async (data) => {
+    socket.on('adminAction', (data) => {
         const { type, targetId, amount, position, duration, enabled, multiplier } = data;
         
         switch(type) {
@@ -856,62 +680,6 @@ io.on('connection', (socket) => {
                     console.log(`⚡ Admin set ${targetId} speed to ${multiplier}x`);
                 }
                 break;
-            case 'ipBan':
-                if (players[targetId]) {
-                    const player = players[targetId];
-                    const reason = data.reason || 'No reason provided';
-                    
-                    ipBanSystem.banIP(
-                        player.ip,
-                        player.username,
-                        reason,
-                        socket.id
-                    ).then(success => {
-                        // Kick the player immediately
-                        io.to(targetId).emit('adminKick', {
-                            reason: `IP Banned: ${reason}`
-                        });
-                        
-                        setTimeout(() => {
-                            io.sockets.sockets.get(targetId)?.disconnect(true);
-                        }, 1000);
-                        
-                        console.log(`🚫 Admin IP banned ${player.username} (${player.ip}) - Reason: ${reason}`);
-                        
-                        // Notify admin
-                        socket.emit('adminActionResult', {
-                            success: true,
-                            message: `IP banned ${player.username} (${player.ip})`
-                        });
-                    }).catch(err => {
-                        console.error('Failed to IP ban:', err);
-                    });
-                }
-                break;
-                
-            case 'unbanIP':
-                const ipToUnban = data.ip;
-                if (ipToUnban) {
-                    ipBanSystem.unbanIP(ipToUnban).then(success => {
-                        socket.emit('adminActionResult', {
-                            success: success,
-                            message: success ? `Unbanned IP: ${ipToUnban}` : `Failed to unban IP: ${ipToUnban}`
-                        });
-                    }).catch(err => {
-                        console.error('Failed to unban IP:', err);
-                    });
-                }
-                break;
-                
-            case 'getBannedIPs':
-                ipBanSystem.getAllBannedIPs().then(bannedIPs => {
-                    socket.emit('bannedIPsList', {
-                        ips: bannedIPs
-                    });
-                }).catch(err => {
-                    console.error('Failed to get banned IPs:', err);
-                });
-                break;
         }
     });
 
@@ -1023,13 +791,6 @@ io.on('connection', (socket) => {
             });
         }
     }, 60000);
-});
-
-// Initialize IP ban system when server starts
-ipBanSystem.initDatabase().then(() => {
-    console.log('✅ IP Ban system ready');
-}).catch(err => {
-    console.error('❌ Failed to initialize IP ban system:', err);
 });
 
 const PORT = process.env.PORT || 3000;
