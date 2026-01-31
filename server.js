@@ -4,7 +4,7 @@
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
-const sqlite3 = require('sqlite3').verbose();
+//const sqlite3 = require('sqlite3').verbose();
 const express = require('express');
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const fs = require('fs');
@@ -21,16 +21,19 @@ const io = require('socket.io')(http, {
 
 class IPBanSystem {
     constructor() {
-        this.db = new sqlite3.Database('./bans.db');
         this.bannedIPs = new Map();
+        this.accountId = process.env.CLOUDFLARE_ACCOUNT_ID;
+        this.apiToken = process.env.CLOUDFLARE_API_TOKEN;
+        this.databaseId = '10823ea9-356a-4771-935f-23d94709b173';
         this.initDatabase();
     }
 
     async initDatabase() {
-        return new Promise((resolve, reject) => {
-            this.db.run(`
+        try {
+            // Create table if it doesn't exist
+            await this.queryD1(`
                 CREATE TABLE IF NOT EXISTS banned_ips (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id INTEGER PRIMARY KEY,
                     ip TEXT NOT NULL UNIQUE,
                     username TEXT,
                     reason TEXT,
@@ -38,28 +41,55 @@ class IPBanSystem {
                     admin_id TEXT,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
-            `, (err) => {
-                if (err) {
-                    console.error('❌ Database initialization failed:', err);
-                    reject(err);
-                    return;
-                }
-                console.log('✅ Database initialized');
-                this.loadBans().then(resolve).catch(reject);
-            });
-        });
+            `);
+            
+            await this.loadBans();
+            console.log('✅ Cloudflare D1 connected via API');
+        } catch (error) {
+            console.warn('⚠️ Could not connect to Cloudflare D1:', error.message);
+            console.log('⚠️ Using in-memory bans as fallback');
+        }
+    }
+
+    async queryD1(sql, params = []) {
+        if (!this.accountId || !this.apiToken) {
+            throw new Error('Cloudflare credentials not configured');
+        }
+        
+        const response = await fetch(
+            `https://api.cloudflare.com/client/v4/accounts/${this.accountId}/d1/database/${this.databaseId}/query`,
+            {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${this.apiToken}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    sql: sql,
+                    params: params
+                })
+            }
+        );
+        
+        if (!response.ok) {
+            throw new Error(`D1 API error: ${response.statusText}`);
+        }
+        
+        const data = await response.json();
+        
+        if (!data.success) {
+            throw new Error(`D1 query failed: ${JSON.stringify(data.errors)}`);
+        }
+        
+        return data.result;
     }
 
     async loadBans() {
-        return new Promise((resolve, reject) => {
-            this.db.all('SELECT * FROM banned_ips', [], (err, rows) => {
-                if (err) {
-                    console.warn('⚠️ Could not load banned IPs:', err.message);
-                    resolve();
-                    return;
-                }
-                
-                rows.forEach(ban => {
+        try {
+            const result = await this.queryD1('SELECT * FROM banned_ips');
+            
+            if (result && result[0] && result[0].results) {
+                result[0].results.forEach(ban => {
                     this.bannedIPs.set(ban.ip, {
                         username: ban.username,
                         reason: ban.reason,
@@ -67,53 +97,50 @@ class IPBanSystem {
                         adminId: ban.admin_id
                     });
                 });
-                
-                console.log(`✅ Loaded ${this.bannedIPs.size} banned IPs from database`);
-                resolve();
-            });
-        });
+                console.log(`✅ Loaded ${this.bannedIPs.size} banned IPs from Cloudflare D1`);
+            }
+        } catch (error) {
+            console.warn('⚠️ Could not load banned IPs:', error.message);
+        }
     }
 
     async banIP(ip, username, reason, adminId) {
-        return new Promise((resolve, reject) => {
-            this.db.run(
+        try {
+            // Store in memory
+            this.bannedIPs.set(ip, {
+                username: username || 'Unknown',
+                reason: reason || 'No reason provided',
+                timestamp: Date.now(),
+                adminId: adminId || 'system'
+            });
+            
+            // Store in D1
+            await this.queryD1(
                 `INSERT OR REPLACE INTO banned_ips (ip, username, reason, timestamp, admin_id) VALUES (?, ?, ?, ?, ?)`,
-                [ip, username || 'Unknown', reason || 'No reason provided', Date.now(), adminId || 'system'],
-                (err) => {
-                    if (err) {
-                        console.error('Error banning IP:', err);
-                        reject(err);
-                        return;
-                    }
-                    
-                    this.bannedIPs.set(ip, {
-                        username: username || 'Unknown',
-                        reason: reason || 'No reason provided',
-                        timestamp: Date.now(),
-                        adminId: adminId || 'system'
-                    });
-                    
-                    console.log(`🚫 IP ${ip} banned by ${adminId} - Reason: ${reason}`);
-                    resolve(true);
-                }
+                [ip, username || 'Unknown', reason || 'No reason provided', Date.now(), adminId || 'system']
             );
-        });
+            
+            console.log(`🚫 IP ${ip} banned by ${adminId} - Reason: ${reason}`);
+            return true;
+        } catch (error) {
+            console.error('Error banning IP:', error.message);
+            // Still return true because memory ban succeeded
+            return true;
+        }
     }
 
     async unbanIP(ip) {
-        return new Promise((resolve, reject) => {
-            this.db.run(`DELETE FROM banned_ips WHERE ip = ?`, [ip], (err) => {
-                if (err) {
-                    console.error('Error unbanning IP:', err);
-                    reject(err);
-                    return;
-                }
-                
-                this.bannedIPs.delete(ip);
-                console.log(`✅ IP ${ip} unbanned`);
-                resolve(true);
-            });
-        });
+        try {
+            this.bannedIPs.delete(ip);
+            
+            await this.queryD1(`DELETE FROM banned_ips WHERE ip = ?`, [ip]);
+            
+            console.log(`✅ IP ${ip} unbanned`);
+            return true;
+        } catch (error) {
+            console.error('Error unbanning IP:', error.message);
+            return false;
+        }
     }
 
     isIPBanned(ip) {
@@ -125,12 +152,24 @@ class IPBanSystem {
     }
 
     async getAllBannedIPs() {
-        return new Promise((resolve, reject) => {
-            this.db.all('SELECT * FROM banned_ips ORDER BY timestamp DESC', [], (err, rows) => {
-                if (err) reject(err);
-                else resolve(rows);
-            });
-        });
+        try {
+            const result = await this.queryD1('SELECT * FROM banned_ips ORDER BY timestamp DESC');
+            
+            if (result && result[0] && result[0].results) {
+                return result[0].results;
+            }
+        } catch (error) {
+            console.error('Error getting banned IPs:', error.message);
+        }
+        
+        // Fallback to memory
+        return Array.from(this.bannedIPs.entries()).map(([ip, info]) => ({
+            ip,
+            username: info.username,
+            reason: info.reason,
+            timestamp: info.timestamp,
+            admin_id: info.adminId
+        }));
     }
 }
 
