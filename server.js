@@ -439,6 +439,7 @@ socket.on('syncCoins', (clientCoins) => {
     });
     
     // Player hit
+    // Player hit - FIXED DAMAGE SYSTEM
     socket.on('hit', (data) => {
         const targetId = data.targetId;
         const shooterId = socket.id;
@@ -447,18 +448,25 @@ socket.on('syncCoins', (clientCoins) => {
             return;
         }
         
-        // Check if survivor perk is active (invincibility for 1s when low health)
-        const targetLoadout = playerLoadouts[targetId];
         const targetPlayer = players[targetId];
+        const targetLoadout = playerLoadouts[targetId];
         
+        // Check if survivor perk is active (invincibility for 1s when low health)
         if (targetLoadout && targetLoadout.equippedPerk === 'perk_survivor' && 
             targetPlayer.health <= 25 && Date.now() - targetPlayer.lastDamageTime < 1000) {
             // Survivor perk active - no damage
             return;
         }
         
-        // Calculate damage
-        const damage = calculateDamage(shooterId, targetId);
+        // FIX: Use client-provided damage (already calculated with correct gun stats)
+        let damage = data.damage || 25;
+        
+        // Apply perk effects (server-side modifiers only)
+        if (targetLoadout && targetLoadout.equippedPerk === 'perk_tank') {
+            damage *= 0.85; // Tank perk gives 15% damage reduction
+        }
+        
+        damage = Math.round(damage);
         
         // Apply damage to shield first
         if (targetPlayer.shield > 0) {
