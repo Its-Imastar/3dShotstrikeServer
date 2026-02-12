@@ -232,6 +232,18 @@ const GUNS = {
     'gun_marksman': { damage: 50, firerate: 1300, ammo: 9, reloadTime: 3, speed: 0 }
 };
 
+// Custom Match System
+const customMatches = {};
+
+function generateMatchCode() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return code;
+}
+
 // Spam detection
 function isSpam(playerId, message) {
     if (!messageHistory[playerId]) {
@@ -791,7 +803,116 @@ socket.on('syncCoins', (clientCoins) => {
         
         console.log(`💬 Chat from ${username}: "${message}"`);
     });
+    // Create Match
+    socket.on('createMatch', (data) => {
+        const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        const matchCode = data.private ? generateMatchCode() : null;
+        
+        customMatches[matchId] = {
+            id: matchId,
+            name: data.name,
+            host: socket.id,
+            hostName: data.host,
+            maxPlayers: data.maxPlayers,
+            mode: data.mode,
+            timeLimit: data.timeLimit,
+            private: data.private,
+            code: matchCode,
+            players: [socket.id],
+            startTime: Date.now()
+        };
+        
+        socket.matchId = matchId;
+        socket.join(matchId);
+        
+        socket.emit('matchCreated', {
+            id: matchId,
+            name: data.name,
+            code: matchCode,
+            maxPlayers: data.maxPlayers,
+            mode: data.mode,
+            timeLimit: data.timeLimit,
+            host: data.host,
+            players: 1
+        });
+        
+        console.log(`✅ Match created: ${data.name} (${matchId})`);
+    });
     
+    // Join Match
+    socket.on('joinMatch', (data) => {
+        let match = null;
+        
+        // Join by code (private)
+        if (data.code) {
+            match = Object.values(customMatches).find(m => m.code === data.code);
+            if (!match) {
+                socket.emit('matchError', 'Invalid match code');
+                return;
+            }
+        }
+        // Join by ID (public)
+        else if (data.matchId) {
+            match = customMatches[data.matchId];
+            if (!match) {
+                socket.emit('matchError', 'Match not found');
+                return;
+            }
+            if (match.private) {
+                socket.emit('matchError', 'This match is private');
+                return;
+            }
+        }
+        
+        if (!match) {
+            socket.emit('matchError', 'Match not found');
+            return;
+        }
+        
+        if (match.players.length >= match.maxPlayers) {
+            socket.emit('matchError', 'Match is full');
+            return;
+        }
+        
+        match.players.push(socket.id);
+        socket.matchId = match.id;
+        socket.join(match.id);
+        
+        socket.emit('matchJoined', {
+            id: match.id,
+            name: match.name,
+            code: match.code,
+            maxPlayers: match.maxPlayers,
+            mode: match.mode,
+            timeLimit: match.timeLimit,
+            host: match.hostName,
+            players: match.players.length
+        });
+        
+        // Notify all players in match
+        io.to(match.id).emit('matchUpdate', {
+            players: match.players.length
+        });
+        
+        console.log(`✅ Player ${socket.id} joined match ${match.name}`);
+    });
+    
+    // Get Match List
+    socket.on('getMatches', () => {
+        const publicMatches = Object.values(customMatches)
+            .filter(m => !m.private)
+            .map(m => ({
+                id: m.id,
+                name: m.name,
+                host: m.hostName,
+                players: m.players.length,
+                maxPlayers: m.maxPlayers,
+                mode: m.mode,
+                timeLimit: m.timeLimit
+            }));
+        
+        socket.emit('matchList', publicMatches);
+    });
     // Disconnect
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
@@ -800,6 +921,22 @@ socket.on('syncCoins', (clientCoins) => {
         delete playerLoadouts[socket.id];
         delete playerCoins[socket.id];
         delete messageHistory[socket.id];
+        // Clean up custom match
+        if (socket.matchId && customMatches[socket.matchId]) {
+            const match = customMatches[socket.matchId];
+            match.players = match.players.filter(p => p !== socket.id);
+            
+            if (match.players.length === 0) {
+                // Delete empty match
+                delete customMatches[socket.matchId];
+                console.log(`🗑️ Deleted empty match ${socket.matchId}`);
+            } else {
+                // Update remaining players
+                io.to(socket.matchId).emit('matchUpdate', {
+                    players: match.players.length
+                });
+            }
+        }
     });
     
     // Passive coin generation (every minute)
