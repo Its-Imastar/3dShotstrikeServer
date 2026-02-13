@@ -1,5 +1,5 @@
 // server.js - COPPA-Compliant with FREE Gemini AI + Bad Word List
-// Safe for users under 13
+// Safe for users under 13 - WITH FIXED CUSTOM MATCH ISOLATION
 
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
@@ -89,23 +89,16 @@ const basicFilter = (message) => {
     
     // Critical words (always blocked) - VERY STRICT FOR KIDS
     const criticalWords = [
-        // Slurs
         'nigger', 'nigga', 'nig', 'faggot', 'fag', 'retard', 'gay',
-        // Violence
         'kill', 'murder', 'die', 'death', 'dead', 'blood', 'gun', 'knife', 'shoot', 'stab',
         'rape', 'suicide', 'kys', 'killyourself', 'hurt', 'pain', 'torture', 'weapon',
-        // Coded workarounds kids use
         'unalive', 'sewerslide', 'toasterbath', 'neckrope', 'aliven', 'die',
-        // Inappropriate
         'sex', 'sexy', 'porn', 'xxx', 'naked', 'nude', 'penis', 'vagina', 'boobs', 'butt', 'booty',
         'pedo', 'pedophile', 'molest', 'nsfw', 'corn',
-        // Personal safety
         'address', 'phone', 'phonenumber', 'email', 'gmail', 'meet', 'meetup', 'location', 
         'school', 'age', 'howold', 'parent', 'whereulive', 'city', 'state',
         'discord', 'snap', 'snapchat', 'insta', 'instagram', 'tiktok', 'whatsapp', 'addme',
-        // Mean/bullying
         'stupid', 'dumb', 'idiot', 'moron', 'loser', 'ugly', 'fat', 'hate', 'sucks', 'trash',
-        // Profanity
         'fuck', 'fck', 'fuk', 'fvck', 'phuck',
         'shit', 'sht', 'shyt', 
         'bitch', 'btch', 'biatch',
@@ -308,10 +301,18 @@ io.on('connection', (socket) => {
     
     initializePlayerData(socket.id);
     
-    // Send initial data to client
+    // Send initial data to client - FILTERED by mode
+    // Only send players who are also in global mode
+    const globalPlayers = {};
+    Object.keys(players).forEach(id => {
+        if (playerMode[id] === 'global') {
+            globalPlayers[id] = players[id];
+        }
+    });
+    
     socket.emit('init', {
         playerId: socket.id,
-        players: players
+        players: globalPlayers
     });
     
     // Send coins and loadout
@@ -321,7 +322,9 @@ io.on('connection', (socket) => {
     });
     
     // Only broadcast to global players (not in matches)
-    socket.broadcast.emit('playerJoined', players[socket.id]);
+    if (playerMode[socket.id] === 'global') {
+        socket.broadcast.emit('playerJoined', players[socket.id]);
+    }
     
     // Username update
     socket.on('setUsername', (username) => {
@@ -401,7 +404,7 @@ io.on('connection', (socket) => {
         console.log(`Player ${playerId} purchased ${itemId} for ${cost} coins`);
     });
     
-    // Movement
+    // Movement - CRITICAL FIX: Only broadcast to same mode
     socket.on('move', (data) => {
         if (players[socket.id]) {
             players[socket.id].position = data.position;
@@ -503,13 +506,13 @@ io.on('connection', (socket) => {
         });
         
         // Broadcast damage visual to appropriate audience
-        if (playerMode[shooterId] === 'global') {
+        if (playerMode[shooterId] === 'global' && playerMode[targetId] === 'global') {
             socket.broadcast.emit('playerDamaged', {
                 targetId: targetId,
                 shooterId: shooterId,
                 damage: damage
             });
-        } else if (playerMode[shooterId] !== 'global' && socket.matchId) {
+        } else if (socket.matchId) {
             socket.to(socket.matchId).emit('playerDamaged', {
                 targetId: targetId,
                 shooterId: shooterId,
@@ -544,7 +547,7 @@ io.on('connection', (socket) => {
         }
         
         // Broadcast death to appropriate audience
-        if (playerMode[targetId] === 'global' || playerMode[killerId] === 'global') {
+        if (playerMode[targetId] === 'global' && playerMode[killerId] === 'global') {
             io.emit('playerDied', {
                 targetId: targetId,
                 killerId: killerId,
@@ -825,7 +828,7 @@ io.on('connection', (socket) => {
         console.log(`✅ Match created: ${data.name} (${matchId})`);
     });
     
-    // Join Match
+    // Join Match - FIXED: Send existing players to joiner
     socket.on('joinMatch', (data) => {
         let match = null;
         
@@ -864,7 +867,7 @@ io.on('connection', (socket) => {
         socket.matchId = match.id;
         socket.join(match.id);
         
-        // Send all existing players in the match to the new player
+        // CRITICAL FIX: Send ALL existing players in the match to the new player
         match.players.forEach(playerId => {
             if (playerId !== socket.id && players[playerId]) {
                 socket.emit('playerJoined', players[playerId]);
@@ -909,7 +912,7 @@ io.on('connection', (socket) => {
         socket.emit('matchList', publicMatches);
     });
     
-    // Disconnect
+    // Disconnect - FIXED: Proper cleanup
     socket.on('disconnect', () => {
         console.log('Player disconnected:', socket.id);
         
@@ -942,6 +945,17 @@ io.on('connection', (socket) => {
             }
         }
     });
+    
+    // Passive coin generation (every minute)
+    setInterval(() => {
+        if (players[socket.id]) {
+            playerCoins[socket.id] += 10;
+            socket.emit('coinUpdate', {
+                playerId: socket.id,
+                coins: playerCoins[socket.id]
+            });
+        }
+    }, 60000);
 });
 
 const PORT = process.env.PORT || 3000;
@@ -949,5 +963,5 @@ http.listen(PORT, () => {
     console.log(`🎮 Server running on port ${PORT}`);
     console.log('👶 COPPA-COMPLIANT MODE: Safe for users under 13');
     console.log('✅ Multi-layer chat filtering active');
-    console.log('✅ Custom match system with complete isolation');
+    console.log('✅ Custom match system with COMPLETE isolation');
 });
