@@ -880,7 +880,7 @@ socket.on('joinMatch', (data) => {
     // CRITICAL FIX 2: Notify ALL players in match about the new player
     // Use io.to(match.id) instead of socket.to(match.id) to ensure everyone gets it
     console.log(`📢 Broadcasting new player ${socket.id} to all in match ${match.id}`);
-    io.to(match.id).emit('playerJoined', players[socket.id]);
+    socket.to(match.id).emit('playerJoined', players[socket.id]);
     
     // Send match joined confirmation
     socket.emit('matchJoined', {
