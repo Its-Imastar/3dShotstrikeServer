@@ -420,17 +420,29 @@ socket.on('syncCoins', (clientCoins) => {
     });
     
     // Movement
-    socket.on('move', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].position = data.position;
-            players[socket.id].rotation = data.rotation;
+// Movement
+socket.on('move', (data) => {
+    if (players[socket.id]) {
+        players[socket.id].position = data.position;
+        players[socket.id].rotation = data.rotation;
+        
+        // If in a custom match, broadcast only to that match room
+        if (data.matchId && customMatches[data.matchId]) {
+            socket.to(data.matchId).emit('playerMoved', {
+                playerId: socket.id,
+                position: data.position,
+                rotation: data.rotation
+            });
+        } else {
+            // Regular multiplayer - broadcast to everyone
             socket.broadcast.emit('playerMoved', {
                 playerId: socket.id,
                 position: data.position,
                 rotation: data.rotation
             });
         }
-    });
+    }
+});
     
     // Shooting
     socket.on('shoot', (data) => {
@@ -804,99 +816,109 @@ socket.on('syncCoins', (clientCoins) => {
         console.log(`💬 Chat from ${username}: "${message}"`);
     });
     // Create Match
-    socket.on('createMatch', (data) => {
-        const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        const matchCode = data.private ? generateMatchCode() : null;
-        
-        customMatches[matchId] = {
-            id: matchId,
-            name: data.name,
-            host: socket.id,
-            hostName: data.host,
-            maxPlayers: data.maxPlayers,
-            mode: data.mode,
-            timeLimit: data.timeLimit,
-            private: data.private,
-            code: matchCode,
-            players: [socket.id],
-            startTime: Date.now()
-        };
-        
-        socket.matchId = matchId;
-        socket.join(matchId);
-        
-        socket.emit('matchCreated', {
-            id: matchId,
-            name: data.name,
-            code: matchCode,
-            maxPlayers: data.maxPlayers,
-            mode: data.mode,
-            timeLimit: data.timeLimit,
-            host: data.host,
-            players: 1
-        });
-        
-        console.log(`✅ Match created: ${data.name} (${matchId})`);
+    // Create Match
+socket.on('createMatch', (data) => {
+    const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+    const matchCode = data.private ? generateMatchCode() : null;
+    
+    customMatches[matchId] = {
+        id: matchId,
+        name: data.name,
+        host: socket.id,
+        hostName: data.host,
+        maxPlayers: data.maxPlayers,
+        mode: data.mode,
+        timeLimit: data.timeLimit,
+        private: data.private,
+        code: matchCode,
+        players: [socket.id],
+        startTime: Date.now()
+    };
+    
+    socket.matchId = matchId;
+    socket.join(matchId);
+    
+    socket.emit('matchCreated', {
+        id: matchId,
+        name: data.name,
+        code: matchCode,
+        maxPlayers: data.maxPlayers,
+        mode: data.mode,
+        timeLimit: data.timeLimit,
+        host: data.host,
+        players: 1
     });
     
+    console.log(`✅ Match created: ${data.name} (${matchId})`);
+});
     // Join Match
-    socket.on('joinMatch', (data) => {
-        let match = null;
-        
-        // Join by code (private)
-        if (data.code) {
-            match = Object.values(customMatches).find(m => m.code === data.code);
-            if (!match) {
-                socket.emit('matchError', 'Invalid match code');
-                return;
-            }
+// Join Match
+socket.on('joinMatch', (data) => {
+    let match = null;
+    
+    // Join by code (private)
+    if (data.code) {
+        match = Object.values(customMatches).find(m => m.code === data.code);
+        if (!match) {
+            socket.emit('matchError', 'Invalid match code');
+            return;
         }
-        // Join by ID (public)
-        else if (data.matchId) {
-            match = customMatches[data.matchId];
-            if (!match) {
-                socket.emit('matchError', 'Match not found');
-                return;
-            }
-            if (match.private) {
-                socket.emit('matchError', 'This match is private');
-                return;
-            }
-        }
-        
+    }
+    // Join by ID (public)
+    else if (data.matchId) {
+        match = customMatches[data.matchId];
         if (!match) {
             socket.emit('matchError', 'Match not found');
             return;
         }
-        
-        if (match.players.length >= match.maxPlayers) {
-            socket.emit('matchError', 'Match is full');
+        if (match.private) {
+            socket.emit('matchError', 'This match is private');
             return;
         }
-        
-        match.players.push(socket.id);
-        socket.matchId = match.id;
-        socket.join(match.id);
-        
-        socket.emit('matchJoined', {
-            id: match.id,
-            name: match.name,
-            code: match.code,
-            maxPlayers: match.maxPlayers,
-            mode: match.mode,
-            timeLimit: match.timeLimit,
-            host: match.hostName,
-            players: match.players.length
-        });
-        
-        // Notify all players in match
-        io.to(match.id).emit('matchUpdate', {
-            players: match.players.length
-        });
-        
-        console.log(`✅ Player ${socket.id} joined match ${match.name}`);
+    }
+    
+    if (!match) {
+        socket.emit('matchError', 'Match not found');
+        return;
+    }
+    
+    if (match.players.length >= match.maxPlayers) {
+        socket.emit('matchError', 'Match is full');
+        return;
+    }
+    
+    match.players.push(socket.id);
+    socket.matchId = match.id;
+    socket.join(match.id);
+    
+    // Send all existing players in the match to the new player
+    match.players.forEach(playerId => {
+        if (playerId !== socket.id && players[playerId]) {
+            socket.emit('playerJoined', players[playerId]);
+        }
     });
     
+    // Notify all players in match about the new player
+    socket.to(match.id).emit('playerJoined', players[socket.id]);
+    
+    socket.emit('matchJoined', {
+        id: match.id,
+        name: match.name,
+        code: match.code,
+        maxPlayers: match.maxPlayers,
+        mode: match.mode,
+        timeLimit: match.timeLimit,
+        host: match.hostName,
+        players: match.players.length
+    });
+    
+    // Notify all players in match of player count update
+    io.to(match.id).emit('matchUpdate', {
+        players: match.players.length
+    });
+    
+    console.log(`✅ Player ${socket.id} joined match ${match.name}`);
+});
     // Get Match List
     socket.on('getMatches', () => {
         const publicMatches = Object.values(customMatches)
