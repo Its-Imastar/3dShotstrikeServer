@@ -829,71 +829,78 @@ io.on('connection', (socket) => {
     });
     
     // Join Match - FIXED: Send existing players to joiner
-    socket.on('joinMatch', (data) => {
-        let match = null;
-        
-        if (data.code) {
-            match = Object.values(customMatches).find(m => m.code === data.code);
-            if (!match) {
-                socket.emit('matchError', 'Invalid match code');
-                return;
-            }
-        } else if (data.matchId) {
-            match = customMatches[data.matchId];
-            if (!match) {
-                socket.emit('matchError', 'Match not found');
-                return;
-            }
-            if (match.private) {
-                socket.emit('matchError', 'This match is private');
-                return;
-            }
+// Join Match - COMPLETELY FIXED
+socket.on('joinMatch', (data) => {
+    let match = null;
+    
+    if (data.code) {
+        match = Object.values(customMatches).find(m => m.code === data.code);
+        if (!match) {
+            socket.emit('matchError', 'Invalid match code');
+            return;
         }
-        
+    } else if (data.matchId) {
+        match = customMatches[data.matchId];
         if (!match) {
             socket.emit('matchError', 'Match not found');
             return;
         }
-        
-        if (match.players.length >= match.maxPlayers) {
-            socket.emit('matchError', 'Match is full');
+        if (match.private) {
+            socket.emit('matchError', 'This match is private');
             return;
         }
-        
-        match.players.push(socket.id);
-        
-        // Switch player to match mode
-        playerMode[socket.id] = match.id;
-        socket.matchId = match.id;
-        socket.join(match.id);
-        
-        // CRITICAL FIX: Send ALL existing players in the match to the new player
-        match.players.forEach(playerId => {
-            if (playerId !== socket.id && players[playerId]) {
-                socket.emit('playerJoined', players[playerId]);
-            }
-        });
-        
-        // Notify all players in match about the new player
-        socket.to(match.id).emit('playerJoined', players[socket.id]);
-        
-        socket.emit('matchJoined', {
-            id: match.id,
-            name: match.name,
-            code: match.code,
-            maxPlayers: match.maxPlayers,
-            mode: match.mode,
-            timeLimit: match.timeLimit,
-            host: match.hostName,
-            players: match.players.length
-        });
-        
-        io.to(match.id).emit('matchUpdate', {
-            players: match.players.length
-        });
-        
-        console.log(`✅ Player ${socket.id} joined match ${match.name}`);
+    }
+    
+    if (!match) {
+        socket.emit('matchError', 'Match not found');
+        return;
+    }
+    
+    if (match.players.length >= match.maxPlayers) {
+        socket.emit('matchError', 'Match is full');
+        return;
+    }
+    
+    // Add player to match
+    match.players.push(socket.id);
+    
+    // Switch player to match mode
+    playerMode[socket.id] = match.id;
+    socket.matchId = match.id;
+    socket.join(match.id);
+    
+    // CRITICAL FIX 1: Send ALL existing players in the match to the new player
+    match.players.forEach(playerId => {
+        if (playerId !== socket.id && players[playerId]) {
+            console.log(`📤 Sending existing player ${playerId} to new player ${socket.id}`);
+            socket.emit('playerJoined', players[playerId]);
+        }
     });
+    
+    // CRITICAL FIX 2: Notify ALL players in match about the new player
+    // Use io.to(match.id) instead of socket.to(match.id) to ensure everyone gets it
+    console.log(`📢 Broadcasting new player ${socket.id} to all in match ${match.id}`);
+    io.to(match.id).emit('playerJoined', players[socket.id]);
+    
+    // Send match joined confirmation
+    socket.emit('matchJoined', {
+        id: match.id,
+        name: match.name,
+        code: match.code,
+        maxPlayers: match.maxPlayers,
+        mode: match.mode,
+        timeLimit: match.timeLimit,
+        host: match.hostName,
+        players: match.players.length
+    });
+    
+    // Update player count for everyone in the match
+    io.to(match.id).emit('matchUpdate', {
+        players: match.players.length
+    });
+    
+    console.log(`✅ Player ${socket.id} joined match ${match.name}. Total players: ${match.players.length}`);
+});
     
     // Get Match List
     socket.on('getMatches', () => {
