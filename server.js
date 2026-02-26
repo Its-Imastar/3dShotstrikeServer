@@ -223,6 +223,10 @@ const GUNS = {
 
 // Custom Match System
 const customMatches = {};
+// Grenade tracking
+const activeGrenades = {};
+
+
 
 function generateMatchCode() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -354,7 +358,44 @@ io.on('connection', (socket) => {
             coins: playerCoins[playerId]
         });
     });
+    socket.on('throwGrenade', (data) => {
+    const grenadeId = 'grenade_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     
+    activeGrenades[grenadeId] = {
+        id: grenadeId,
+        position: data.position,
+        velocity: data.velocity,
+        thrownBy: socket.id
+    };
+    
+    // Broadcast to others
+    socket.broadcast.emit('grenadeThrown', {
+        grenadeId: grenadeId,
+        position: data.position,
+        velocity: data.velocity,
+        thrownBy: socket.id
+    });
+});
+
+socket.on('grenadeExploded', (data) => {
+    socket.broadcast.emit('grenadeExploded', {
+        position: data.position,
+        thrownBy: data.thrownBy
+    });
+});
+
+socket.on('grenadeDamage', (data) => {
+    const targetPlayer = players[data.targetId];
+    if (targetPlayer) {
+        targetPlayer.health -= data.damage;
+        io.to(data.targetId).emit('playerHit', {
+            targetId: data.targetId,
+            health: targetPlayer.health,
+            damage: data.damage,
+            shooterId: data.thrownBy
+        });
+    }
+});
     // Loadout update
     socket.on('updateLoadout', (loadout) => {
         playerLoadouts[socket.id] = {
