@@ -6,10 +6,9 @@ if (process.env.NODE_ENV !== 'production') {
 }
 
 const express = require('express');
-const { GoogleGenerativeAI } = require("@google/generative-ai");
 const fs = require('fs');
 const path = require('path');
-
+const fetch = require('node-fetch');
 const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
@@ -20,14 +19,17 @@ const io = require('socket.io')(http, {
 });
 
 // Initialize Google Gemini AI (FREE TIER)
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
+// Cloudflare AI Configuration
+const CLOUDFLARE_ACCOUNT_ID = process.env.CF_ACCOUNT_ID
+const CLOUDFLARE_API_KEY = process.env.CF_API_KEY
+const CLOUDFLARE_EMAIL = process.env.CF_EMAIL
+const CF_MODEL = '@cf/meta/llama-3-8b-instruct';
+const CF_URL = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run/${CF_MODEL}`;
 
-// Validate API key on startup
-if (!process.env.GEMINI_API_KEY) {
-    console.warn('⚠️  GEMINI_API_KEY not set. Using basic filter only.');
-    console.log('   Get your FREE key: https://aistudio.google.com/app/apikey');
+if (!CLOUDFLARE_API_KEY) {
+    console.warn('⚠️  CF_API_KEY not set. Using basic filter only.');
 } else {
-    console.log('✅ Gemini API key configured');
+    console.log('✅ Cloudflare AI configured');
 }
 
 // Load bad words from external file
@@ -148,54 +150,49 @@ async function moderateMessage(message) {
     if (!basicFilter(message)) {
         return false;
     }
-    
-    if (!process.env.GEMINI_API_KEY) {
+
+    if (!CLOUDFLARE_API_KEY) {
         return true;
     }
-    
+
     try {
-        const model = genAI.getGenerativeModel({ 
-            model: "gemini-1.5-flash-latest"
+        const messages = [
+            {
+                role: 'system',
+                content: 'You are a chat moderator for a video game. Respond with only SAFE or UNSAFE. When in doubt, better to mark UNSAFE than SAFE. Light things like stupid or dumb is okay but strictly no more than that. Also look out for toxic behavior and people sharing personal information. You can do this!'
+            },
+            {
+                role: 'user',
+                content: message.substring(0, 200)
+            }
+        ];
+
+        const response = await fetch(CF_URL, {
+            method: 'POST',
+            headers: {
+                'X-Auth-Email': CLOUDFLARE_EMAIL,
+                'X-Auth-Key': CLOUDFLARE_API_KEY,
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ messages })
         });
-        
-        const prompt = `You are a VERY STRICT chat moderator for a children's game (ages 6-12). Kids' safety is the top priority. Respond with ONLY "SAFE" or "UNSAFE".
 
-UNSAFE if message contains:
-- ANY curse words or mean words
-- ANY mentions of violence, weapons, fighting, killing, hurting, blood
-- ANY body parts or bathroom words
-- Asking personal questions
-- Asking to meet or exchange contact info
-- Mentioning social media
-- ANY adult topics
-- Bullying, teasing, or being mean to others
-- Trying to trick the filter
+        if (!response.ok) {
+            throw new Error(`Cloudflare API error: ${response.status}`);
+        }
 
-SAFE ONLY if message is:
-- Positive game chat: "good game", "nice shot", "great job", "gg", "wp"
-- Game strategy: "let's go left", "watch out", "defend the base"
-- Friendly and kind: "thanks", "you're good", "that was cool", "have fun"
-- Simple questions about the GAME ONLY
+        const data = await response.json();
+        const text = (data?.result?.response || '').trim().toUpperCase();
 
-When in doubt, mark as UNSAFE.
-
-Message to check: "${message.substring(0, 200)}"
-
-Your response (SAFE or UNSAFE):`;
-
-        const result = await model.generateContent(prompt);
-        const response = await result.response;
-        const text = response.text().trim().toUpperCase();
-        
         const isSafe = text.includes('SAFE') && !text.includes('UNSAFE');
-        
+
         console.log(`🤖 AI moderation: "${message.substring(0, 30)}..." → ${isSafe ? 'SAFE' : 'UNSAFE'}`);
-        
+
         return isSafe;
-        
+
     } catch (error) {
-        console.error("AI moderation error:", error.message);
-        return true;
+        console.error('AI moderation error:', error.message);
+        return true; // Fail open — basic filter already ran
     }
 }
 
