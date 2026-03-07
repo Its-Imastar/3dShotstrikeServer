@@ -8,7 +8,6 @@ if (process.env.NODE_ENV !== 'production') {
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
-const fetch = require('node-fetch');
 const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
