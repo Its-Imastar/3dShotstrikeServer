@@ -97,6 +97,7 @@ const activeGrenades = {};
 // Ban state
 const bannedAccounts = new Set(); // account ID cache
 const bannedIPs      = new Set(); // IP cache
+const godModePlayers = new Set();
 
 // Admin state — maps socket.id → { accountId, username, isAdmin }
 const adminSessions  = {};
@@ -327,7 +328,7 @@ io.on('connection', (socket) => {
         const targetId  = data.targetId;
         const shooterId = socket.id;
         if (!players[targetId] || !players[shooterId] || targetId === shooterId) return;
-
+        if (godModePlayers.has(targetId)) return;
         const targetPlayer = players[targetId];
         const loadout      = playerLoadouts[shooterId];
 
@@ -672,6 +673,11 @@ io.on('connection', (socket) => {
             }
 
             case 'godMode': {
+                if (enabled) {
+                    godModePlayers.add(targetId);
+                } else {
+                    godModePlayers.delete(targetId);
+                }
                 io.to(targetId).emit('adminGodMode', { enabled });
                 break;
             }
