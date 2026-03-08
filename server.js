@@ -554,12 +554,36 @@ io.on('connection', (socket) => {
             }
 
             case 'unban': {
-                if (targetUsername) await unbanInDatabase(targetUsername);
-                // Remove from caches (we don't know the accountId easily here so clear all — harmless)
-                socket.emit('adminSuccess', `${targetUsername} unbanned`);
+                if (targetUsername) {
+                    await unbanInDatabase(targetUsername);
+                    
+                    // Find and remove their accountId from the in-memory cache
+                    // Search all sockets and adminSessions for a matching username
+                    for (const [sid, session] of Object.entries(adminSessions)) {
+                        if (session.username === targetUsername) {
+                            bannedAccounts.delete(session.accountId);
+                            break;
+                        }
+                    }
+                    
+                    // Also search players object
+                    for (const p of Object.values(players)) {
+                        if (p.username === targetUsername) {
+                            // Find their socket to get accountId
+                            const ps = io.sockets.sockets.get(p.id);
+                            if (ps?.accountId) bannedAccounts.delete(ps.accountId);
+                            break;
+                        }
+                    }
+                    
+                    // Clear the entire bannedAccounts cache as a fallback
+                    // (safe since it gets repopulated on reconnect via the DB check)
+                    bannedAccounts.clear();
+                    
+                    socket.emit('adminSuccess', `${targetUsername} unbanned`);
+                }
                 break;
             }
-
             case 'kick': {
                 const ts = io.sockets.sockets.get(targetId);
                 if (ts) {
