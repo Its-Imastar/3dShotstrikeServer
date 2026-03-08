@@ -377,20 +377,22 @@ io.on('connection', (socket) => {
         const target = players[targetId];
         const killer = players[killerId];
         if (!target || !killer) return;
-
+    
         target.health = 100; target.shield = 0;
         target.position = { x: 0, y: 1.67, z: 0 };
         target.deaths += 1;
         killer.score  += 100;
         killer.kills  += 1;
         playerCoins[killerId] = (playerCoins[killerId] || 0) + 50;
-
+    
         const killerMode = playerMode[killerId];
         const targetMode = playerMode[targetId];
         if (killerMode === 'global' && targetMode === 'global') {
             io.emit('playerDied', { targetId, killerId, killerScore: killer.score });
         } else {
-            const room = customMatches[socket.matchId] ? socket.matchId : null;
+            // FIX: look up the target's match room, not socket.matchId
+            const targetSocket = io.sockets.sockets.get(targetId);
+            const room = targetSocket?.matchId || null;
             if (room) io.to(room).emit('playerDied', { targetId, killerId, killerScore: killer.score });
         }
         io.to(killerId).emit('scoreUpdate', { playerId: killerId, score: killer.score, kills: killer.kills });
@@ -570,18 +572,6 @@ io.on('connection', (socket) => {
             case 'heal': {
                 const p = players[targetId];
                 if (p) { p.health = 100; p.shield = 0; io.to(targetId).emit('adminHeal', { health: 100 }); }
-                break;
-            }
-
-            case 'kill': {
-                const p = players[targetId];
-                if (p) {
-                    handlePlayerDeath(targetId, socket.id);
-                    socket.emit('adminSuccess', `Killed ${data.targetUsername}`);
-                    appendAdminLog && appendAdminLog(`Killed ${data.targetUsername}`);
-                } else {
-                    socket.emit('adminError', 'Player not found');
-                }
                 break;
             }
 
