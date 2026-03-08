@@ -575,7 +575,13 @@ io.on('connection', (socket) => {
 
             case 'kill': {
                 const p = players[targetId];
-                if (p) { p.health = 0; handlePlayerDeath(targetId, socket.id); }
+                if (p) {
+                    handlePlayerDeath(targetId, socket.id);
+                    socket.emit('adminSuccess', `Killed ${data.targetUsername}`);
+                    appendAdminLog && appendAdminLog(`Killed ${data.targetUsername}`);
+                } else {
+                    socket.emit('adminError', 'Player not found');
+                }
                 break;
             }
 
@@ -591,9 +597,36 @@ io.on('connection', (socket) => {
                 break;
             }
 
+            case 'teleportToPlayer': {
+                const p = players[targetId];
+                const destPlayer = data.destinationId
+                    ? players[data.destinationId]
+                    : Object.values(players).find(pl => pl.username === data.destinationUsername);
+                if (p && destPlayer) {
+                    // Offset by 1 on X so they don't perfectly overlap
+                    const destPos = {
+                        x: destPlayer.position.x + 1,
+                        y: destPlayer.position.y,
+                        z: destPlayer.position.z
+                    };
+                    p.position = destPos;
+                    io.to(targetId).emit('adminTeleport', { position: destPos });
+                    socket.emit('adminSuccess', `Teleported ${data.targetUsername} to ${destPlayer.username}`);
+                } else {
+                    socket.emit('adminError', `Destination player "${data.destinationUsername}" not found`);
+                }
+                break;
+            }
+
             case 'teleport': {
                 const p = players[targetId];
-                if (p && position) { p.position = position; io.to(targetId).emit('adminTeleport', { position }); }
+                if (p && position) {
+                    p.position = position;
+                    io.to(targetId).emit('adminTeleport', { position });
+                    socket.emit('adminSuccess', `Teleported ${data.targetUsername} to (${position.x}, ${position.y}, ${position.z})`);
+                } else {
+                    socket.emit('adminError', 'Player or position not found');
+                }
                 break;
             }
 
