@@ -1,6 +1,3 @@
-// server.js - COPPA-Compliant with FREE Gemini AI + Bad Word List
-// Safe for users under 13 - WITH FIXED CUSTOM MATCH ISOLATION
-
 if (process.env.NODE_ENV !== 'production') {
     require('dotenv').config();
 }
@@ -11,1001 +8,667 @@ const path = require('path');
 const app = express();
 const http = require('http').createServer(app);
 const io = require('socket.io')(http, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
-// Initialize Google Gemini AI (FREE TIER)
-// Cloudflare AI Configuration
-const CLOUDFLARE_ACCOUNT_ID = process.env.CF_ACCOUNT_ID
-const CLOUDFLARE_API_KEY = process.env.CF_API_KEY
-const CLOUDFLARE_EMAIL = process.env.CF_EMAIL
+// ── CONFIG ───────────────────────────────────────────────────────────────────
+const API_URL      = process.env.API_URL      || 'https://shotstrike-api.strike1.workers.dev';
+const ADMIN_SECRET = process.env.ADMIN_SECRET || '';
+
+// Cloudflare AI for chat moderation
+const CLOUDFLARE_ACCOUNT_ID = process.env.CF_ACCOUNT_ID;
+const CLOUDFLARE_API_KEY    = process.env.CF_API_KEY;
+const CLOUDFLARE_EMAIL      = process.env.CF_EMAIL;
 const CF_MODEL = '@cf/meta/llama-3-8b-instruct';
-const CF_URL = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run/${CF_MODEL}`;
+const CF_URL   = `https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/ai/run/${CF_MODEL}`;
 
-if (!CLOUDFLARE_API_KEY) {
-    console.warn('⚠️  CF_API_KEY not set. Using basic filter only.');
-} else {
-    console.log('✅ Cloudflare AI configured');
-}
-
-// Load bad words from external file
+// ── BAD WORDS ────────────────────────────────────────────────────────────────
 let blockedWordsFromFile = [];
 try {
     const badWordsPath = path.join(__dirname, 'badwords.txt');
     if (fs.existsSync(badWordsPath)) {
         blockedWordsFromFile = fs.readFileSync(badWordsPath, 'utf-8')
-            .split('\n')
-            .map(word => word.trim().toLowerCase())
-            .filter(word => word.length > 0);
-        console.log(`✅ Loaded ${blockedWordsFromFile.length} bad words from file`);
-    } else {
-        console.log('ℹ️  No badwords.txt file found, using built-in list only');
+            .split('\n').map(w => w.trim().toLowerCase()).filter(w => w.length > 0);
+        console.log(`✅ Loaded ${blockedWordsFromFile.length} bad words`);
     }
-} catch (error) {
-    console.warn('⚠️  Could not load badwords.txt:', error.message);
-}
+} catch (e) { console.warn('Could not load badwords.txt'); }
 
-// Basic filter with bad word list
+// ── CHAT FILTER ──────────────────────────────────────────────────────────────
 const basicFilter = (message) => {
-    // Advanced normalization to catch MORE workarounds
     const normalized = message.toLowerCase()
-        // Leetspeak
-        .replace(/[@4]/g, 'a')
-        .replace(/[8]/g, 'b')
-        .replace(/[(<\[{]/g, 'c')
-        .replace(/[3]/g, 'e')
-        .replace(/[!1|iíîïìĩī]/g, 'i')
-        .replace(/[0oóôöòõō]/g, 'o')
-        .replace(/[$5]/g, 's')
-        .replace(/[7+]/g, 't')
-        .replace(/[µ]/g, 'u')
-        // Remove ALL separators
-        .replace(/[\s\-_\.•·,;:'"]/g, '')
-        // Remove accents/diacritics
-        .replace(/[àáâãäåāăą]/g, 'a')
-        .replace(/[èéêëēĕėęě]/g, 'e')
-        .replace(/[ìíîïĩīĭįı]/g, 'i')
-        .replace(/[òóôõöōŏő]/g, 'o')
-        .replace(/[ùúûüũūŭůűų]/g, 'u')
-        .replace(/[ýÿ]/g, 'y')
-        .replace(/[ñ]/g, 'n')
-        .replace(/[ç]/g, 'c')
-        // Remove Cyrillic lookalikes
-        .replace(/[аӓ]/g, 'a')
-        .replace(/[е]/g, 'e')
-        .replace(/[і]/g, 'i')
-        .replace(/[о]/g, 'o')
-        .replace(/[с]/g, 'c')
-        .replace(/[р]/g, 'p')
-        .replace(/[х]/g, 'x')
-        // Remove emoji/symbols
-        .replace(/[\u{1F600}-\u{1F64F}]/gu, '')
-        .replace(/[\u{1F300}-\u{1F5FF}]/gu, '')
-        .replace(/[\u{1F680}-\u{1F6FF}]/gu, '')
-        .replace(/[\u{2600}-\u{26FF}]/gu, '')
-        .replace(/[^\w]/g, '');
-    
-    // Critical words (always blocked) - VERY STRICT FOR KIDS
+        .replace(/[@4]/g, 'a').replace(/[8]/g, 'b').replace(/[3]/g, 'e')
+        .replace(/[!1|]/g, 'i').replace(/[0]/g, 'o').replace(/[$5]/g, 's')
+        .replace(/[7]/g, 't').replace(/[\s\-_\.]/g, '').replace(/[^\w]/g, '');
+
     const criticalWords = [
-        'nigger', 'nigga', 'nig', 'faggot', 'fag', 'retard', 'gay',
-        'kill', 'murder', 'die', 'death', 'dead', 'blood', 'gun', 'knife', 'shoot', 'stab',
-        'rape', 'suicide', 'kys', 'killyourself', 'hurt', 'pain', 'torture', 'weapon',
-        'unalive', 'sewerslide', 'toasterbath', 'neckrope', 'aliven', 'die',
-        'sex', 'sexy', 'porn', 'xxx', 'naked', 'nude', 'penis', 'vagina', 'boobs', 'butt', 'booty',
-        'pedo', 'pedophile', 'molest', 'nsfw', 'corn',
-        'address', 'phone', 'phonenumber', 'email', 'gmail', 'meet', 'meetup', 'location', 
-        'school', 'age', 'howold', 'parent', 'whereulive', 'city', 'state',
-        'discord', 'snap', 'snapchat', 'insta', 'instagram', 'tiktok', 'whatsapp', 'addme',
-        'stupid', 'dumb', 'idiot', 'moron', 'loser', 'ugly', 'fat', 'hate', 'sucks', 'trash',
-        'fuck', 'fck', 'fuk', 'fvck', 'phuck',
-        'shit', 'sht', 'shyt', 
-        'bitch', 'btch', 'biatch',
-        'ass', 'arse', 'azz',
-        'damn', 'dang', 'darn',
-        'hell', 'heck',
-        'crap', 'piss'
+        'nigger','nigga','faggot','fag','retard','rape','suicide','kys',
+        'killyourself','sex','porn','xxx','naked','nude','penis','vagina',
+        'pedo','pedophile','fuck','fck','shit','bitch','ass','damn','hell'
     ];
-    
-    const allBlockedWords = [...new Set([...criticalWords, ...blockedWordsFromFile])];
-    
-    for (let word of allBlockedWords) {
-        if (word.length > 2 && normalized.includes(word)) {
-            console.log(`❌ Basic filter blocked: "${message}" → contains "${word}"`);
-            return false;
-        }
+    const allBlocked = [...new Set([...criticalWords, ...blockedWordsFromFile])];
+    for (let word of allBlocked) {
+        if (word.length > 2 && normalized.includes(word)) return false;
     }
-    
-    if (/(.)\1{4,}/.test(message)) {
-        console.log(`❌ Basic filter blocked: "${message}" → character spam`);
-        return false;
-    }
-    
-    const personalInfoPatterns = [
+    if (/(.)\1{4,}/.test(message)) return false;
+    const piPatterns = [
         /\b\d{3}[-.]?\d{3}[-.]?\d{4}\b/,
         /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b/,
-        /\b\d{5}(?:[-\s]\d{4})?\b/,
-        /\b\d{1,5}\s+\w+\s+(street|st|ave|road|rd)\b/i,
-        /\b(?:discord|snap|insta|tiktok)\.gg\b/i,
         /\b(?:www\.|http|\.com|\.net|\.org)\b/i,
-        /\bim\s+\d{1,2}\b/i,
-        /\bi\s*am\s+\d{1,2}\s+(years?\s*old|yo|y\/o)\b/i
     ];
-    
-    for (let pattern of personalInfoPatterns) {
-        if (pattern.test(message)) {
-            console.log(`❌ Basic filter blocked: personal info in "${message}"`);
-            return false;
-        }
-    }
-    
+    for (let p of piPatterns) { if (p.test(message)) return false; }
     return true;
 };
 
-// AI-powered moderation using FREE Gemini
 async function moderateMessage(message) {
-    if (!basicFilter(message)) {
-        return false;
-    }
-
-    if (!CLOUDFLARE_API_KEY) {
-        return true;
-    }
-
+    if (!basicFilter(message)) return false;
+    if (!CLOUDFLARE_API_KEY) return true;
     try {
-        const messages = [
-            {
-                role: 'system',
-                content: 'You are a chat moderator for a video game. Respond with only SAFE or UNSAFE. When in doubt, better to mark UNSAFE than SAFE. Light things like stupid or dumb is okay but strictly no more than that. Also look out for toxic behavior and people sharing personal information. You can do this!'
-            },
-            {
-                role: 'user',
-                content: message.substring(0, 200)
-            }
-        ];
-
-        const response = await fetch(CF_URL, {
+        const res = await fetch(CF_URL, {
             method: 'POST',
             headers: {
                 'X-Auth-Email': CLOUDFLARE_EMAIL,
                 'X-Auth-Key': CLOUDFLARE_API_KEY,
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ messages })
+            body: JSON.stringify({
+                messages: [
+                    { role: 'system', content: 'You are a chat moderator for a kids video game. Respond with only SAFE or UNSAFE.' },
+                    { role: 'user', content: message.substring(0, 200) }
+                ]
+            })
         });
-
-        if (!response.ok) {
-            throw new Error(`Cloudflare API error: ${response.status}`);
-        }
-
-        const data = await response.json();
+        const data = await res.json();
         const text = (data?.result?.response || '').trim().toUpperCase();
-
-        const isSafe = text.includes('SAFE') && !text.includes('UNSAFE');
-
-        console.log(`🤖 AI moderation: "${message.substring(0, 30)}..." → ${isSafe ? 'SAFE' : 'UNSAFE'}`);
-
-        return isSafe;
-
-    } catch (error) {
-        console.error('AI moderation error:', error.message);
-        return true; // Fail open — basic filter already ran
+        return text.includes('SAFE') && !text.includes('UNSAFE');
+    } catch (e) {
+        return true;
     }
 }
 
-// Player data storage
-const players = {};
+// ── STATE ────────────────────────────────────────────────────────────────────
+const players        = {};
 const playerLoadouts = {};
-const playerCoins = {};
+const playerCoins    = {};
 const messageHistory = {};
-
-// Track which players are in which mode
-const playerMode = {}; // 'global' or matchId
-
-// Gun definitions matching client
-const GUNS = {
-    'gun_semi_auto': { damage: 12, firerate: 200, ammo: 12, reloadTime: 2.5, speed: 0 },
-    'gun_full_auto': { damage: 7, firerate: 150, ammo: 30, reloadTime: 3, speed: -5 },
-    'gun_burst': { damage: 18, firerate: 100, ammo: 15, reloadTime: 1.5, burstCooldown: 1.5, burstCount: 3, speed: 5 },
-    'gun_sniper': { damage: 45, firerate: 2500, ammo: 8, reloadTime: 4.5, speed: -15 },
-    'gun_battle_rifle': { damage: 16, firerate: 350, ammo: 18, reloadTime: 4, speed: -5 },
-    'gun_smg': { damage: 10, firerate: 200, ammo: 20, reloadTime: 1.25, speed: 20 },
-    'gun_lmg': { damage: 6, firerate: 80, ammo: 50, reloadTime: 5, speed: -20 },
-    'gun_shotgun': { damage: 18, firerate: 1250, ammo: 7, reloadTime: 0.8, spread: 8, pelletCount: 6, speed: 10 },
-    'gun_marksman': { damage: 50, firerate: 1300, ammo: 9, reloadTime: 3, speed: 0 }
-};
-
-// Custom Match System
-const customMatches = {};
-// Grenade tracking
+const playerMode     = {};
+const customMatches  = {};
 const activeGrenades = {};
 
+// Ban state
+const bannedAccounts = new Set(); // account ID cache
+const bannedIPs      = new Set(); // IP cache
 
+// Admin state — maps socket.id → { accountId, username, isAdmin }
+const adminSessions  = {};
 
-function generateMatchCode() {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    let code = '';
-    for (let i = 0; i < 6; i++) {
-        code += chars.charAt(Math.floor(Math.random() * chars.length));
-    }
-    return code;
+// ── HELPERS ──────────────────────────────────────────────────────────────────
+function getClientIP(socket) {
+    return (
+        socket.handshake.headers['x-forwarded-for']?.split(',')[0]?.trim() ||
+        socket.handshake.address
+    );
 }
 
-// Spam detection
+async function isAccountBanned(token) {
+    try {
+        const res  = await fetch(`${API_URL}/ban-check`, {
+            headers: { 'Authorization': `Bearer ${token}` }
+        });
+        return await res.json();
+    } catch (e) {
+        return { banned: false };
+    }
+}
+
+async function banInDatabase(username, reason, duration_hours) {
+    try {
+        await fetch(`${API_URL}/ban`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-Secret': ADMIN_SECRET
+            },
+            body: JSON.stringify({ username, reason, duration_hours: duration_hours || null })
+        });
+    } catch (e) {
+        console.error('DB ban failed:', e.message);
+    }
+}
+
+async function unbanInDatabase(username) {
+    try {
+        await fetch(`${API_URL}/unban`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-Secret': ADMIN_SECRET
+            },
+            body: JSON.stringify({ username })
+        });
+    } catch (e) {
+        console.error('DB unban failed:', e.message);
+    }
+}
+
 function isSpam(playerId, message) {
-    if (!messageHistory[playerId]) {
-        messageHistory[playerId] = [];
-    }
-    
+    if (!messageHistory[playerId]) messageHistory[playerId] = [];
     const now = Date.now();
-    const recentMessages = messageHistory[playerId].filter(
-        msg => now - msg.timestamp < 15000
-    );
-    
-    const sameMessageCount = recentMessages.filter(
-        msg => msg.message.toLowerCase() === message.toLowerCase()
-    ).length;
-    
-    const messageCount = recentMessages.length;
-    
-    messageHistory[playerId].push({
-        message: message,
-        timestamp: now
-    });
-    
-    if (messageHistory[playerId].length > 10) {
+    const recent = messageHistory[playerId].filter(m => now - m.timestamp < 15000);
+    const sameCount = recent.filter(m => m.message.toLowerCase() === message.toLowerCase()).length;
+    messageHistory[playerId].push({ message, timestamp: now });
+    if (messageHistory[playerId].length > 10)
         messageHistory[playerId] = messageHistory[playerId].slice(-10);
-    }
-    
-    if (sameMessageCount >= 2) return true;
-    if (messageCount >= 4) return true;
-    
+    if (sameCount >= 2) return true;
+    if (recent.length >= 4) return true;
     return false;
 }
 
-function initializePlayerData(playerId) {
-    if (!playerLoadouts[playerId]) {
-        playerLoadouts[playerId] = {
-            equippedGun: 'gun_semi_auto',
-            equippedAbilities: [],
-            equippedPerk: null
-        };
-    }
-    
-    if (!playerCoins[playerId]) {
-        playerCoins[playerId] = 0;
+function initPlayerData(id) {
+    if (!playerLoadouts[id]) playerLoadouts[id] = { equippedGun: 'gun_semi_auto', equippedAbilities: [], equippedPerk: null };
+    if (!playerCoins[id]) playerCoins[id] = 0;
+}
+
+function generateMatchCode() {
+    return Array.from({ length: 6 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'[Math.floor(Math.random() * 36)]).join('');
+}
+
+// Broadcast to the right audience (global or match room)
+function broadcastToAudience(socket, event, data) {
+    if (playerMode[socket.id] === 'global') {
+        socket.broadcast.emit(event, data);
+    } else if (socket.matchId) {
+        socket.to(socket.matchId).emit(event, data);
     }
 }
 
+function emitToAudience(socket, event, data) {
+    if (playerMode[socket.id] === 'global') {
+        io.emit(event, data);
+    } else if (socket.matchId) {
+        io.to(socket.matchId).emit(event, data);
+    }
+}
+
+// ── ADMIN HELPERS ────────────────────────────────────────────────────────────
+function isAdmin(socketId) {
+    return adminSessions[socketId]?.isAdmin === true;
+}
+
+function getOnlinePlayerList() {
+    return Object.values(players).map(p => ({
+        socketId:  p.id,
+        username:  p.username,
+        health:    p.health,
+        score:     p.score,
+        kills:     p.kills,
+        deaths:    p.deaths,
+        coins:     playerCoins[p.id] || 0,
+        mode:      playerMode[p.id] || 'global',
+        isAdmin:   adminSessions[p.id]?.isAdmin || false,
+    }));
+}
+
+// ── SOCKET HANDLER ───────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
-    console.log('✅ Player connected:', socket.id);
-    
-    // Default to global mode
+    const clientIP = getClientIP(socket);
+
+    // ── IP BAN CHECK ─────────────────────────────────────────────────
+    if (bannedIPs.has(clientIP)) {
+        socket.emit('banned', { reason: 'Your IP address has been banned.' });
+        socket.disconnect(true);
+        return;
+    }
+
+    console.log(`✅ Connected: ${socket.id} (${clientIP})`);
+
     playerMode[socket.id] = 'global';
-    
     players[socket.id] = {
-        id: socket.id,
-        username: 'Guest',
-        position: { x: 0, y: 1.67, z: 0 },
-        rotation: { x: 0, y: 0 },
+        id: socket.id, username: 'Guest',
+        position: { x: 0, y: 1.67, z: 0 }, rotation: { x: 0, y: 0 },
         color: Math.floor(Math.random() * 0xffffff),
-        health: 100,
-        shield: 0,
-        score: 0,
-        kills: 0,
-        deaths: 0,
-        lastDamageTime: Date.now()
+        health: 100, shield: 0, score: 0, kills: 0, deaths: 0,
+        lastDamageTime: Date.now(), ip: clientIP,
     };
-    
-    initializePlayerData(socket.id);
-    
-    // Send initial data to client - FILTERED by mode
-    // Only send players who are also in global mode
+    initPlayerData(socket.id);
+
+    // Send existing global players
     const globalPlayers = {};
     Object.keys(players).forEach(id => {
-        if (playerMode[id] === 'global') {
-            globalPlayers[id] = players[id];
+        if (playerMode[id] === 'global') globalPlayers[id] = players[id];
+    });
+    socket.emit('init', { playerId: socket.id, players: globalPlayers });
+    socket.emit('playerData', { coins: playerCoins[socket.id], loadout: playerLoadouts[socket.id] });
+    socket.broadcast.emit('playerJoined', players[socket.id]);
+
+    // ── AUTHENTICATE ─────────────────────────────────────────────────
+    socket.on('authenticate', async (data) => {
+        const { accountId, token, username } = data;
+        if (!accountId || !token) return;
+
+        socket.accountId = accountId;
+        socket.authToken  = token;
+
+        // Cache username for admin display
+        adminSessions[socket.id] = {
+            accountId,
+            username: username || players[socket.id]?.username || 'Guest',
+            isAdmin:  false,
+        };
+
+        // Check account ban
+        if (bannedAccounts.has(accountId)) {
+            socket.emit('banned', { reason: 'Your account has been banned.' });
+            setTimeout(() => socket.disconnect(true), 1500);
+            return;
         }
+
+        const banStatus = await isAccountBanned(token);
+        if (banStatus.banned) {
+            bannedAccounts.add(accountId);
+            socket.emit('banned', {
+                reason: banStatus.reason || 'You have been banned.',
+                until:  banStatus.until ? new Date(banStatus.until).toUTCString() : null
+            });
+            setTimeout(() => socket.disconnect(true), 1500);
+            return;
+        }
+
+        // Check admin status from API
+        try {
+            const res  = await fetch(`${API_URL}/load`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            const data2 = await res.json();
+            if (data2.success && data2.is_admin) {
+                adminSessions[socket.id].isAdmin = true;
+                socket.emit('adminGranted');
+                console.log(`👑 Admin authenticated: ${username} (${socket.id})`);
+            }
+        } catch (e) { /* non-fatal */ }
     });
-    
-    socket.emit('init', {
-        playerId: socket.id,
-        players: globalPlayers
-    });
-    
-    // Send coins and loadout
-    socket.emit('playerData', {
-        coins: playerCoins[socket.id],
-        loadout: playerLoadouts[socket.id]
-    });
-    
-    // Only broadcast to global players (not in matches)
-    if (playerMode[socket.id] === 'global') {
-        socket.broadcast.emit('playerJoined', players[socket.id]);
-    }
-    
-    // Username update
+
+    // ── USERNAME ─────────────────────────────────────────────────────
     socket.on('setUsername', (username) => {
         players[socket.id].username = username;
-        
-        // Broadcast to appropriate audience based on mode
-        if (playerMode[socket.id] === 'global') {
-            socket.broadcast.emit('playerUsernameUpdated', {
-                playerId: socket.id,
-                username: username
-            });
-        } else if (playerMode[socket.id] !== 'global' && socket.matchId) {
-            socket.to(socket.matchId).emit('playerUsernameUpdated', {
-                playerId: socket.id,
-                username: username
-            });
-        }
+        if (adminSessions[socket.id]) adminSessions[socket.id].username = username;
+        broadcastToAudience(socket, 'playerUsernameUpdated', { playerId: socket.id, username });
     });
-    
-    // Coin sync handler
-    socket.on('syncCoins', (clientCoins) => {
-        const playerId = socket.id;
-        playerCoins[playerId] = clientCoins;
-        console.log(`💰 Player ${playerId} coins synced: ${clientCoins}`);
-        socket.emit('coinUpdate', {
-            playerId: playerId,
-            coins: playerCoins[playerId]
-        });
-    });
-    socket.on('throwGrenade', (data) => {
-    const grenadeId = 'grenade_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    
-    activeGrenades[grenadeId] = {
-        id: grenadeId,
-        position: data.position,
-        velocity: data.velocity,
-        thrownBy: socket.id
-    };
-    
-    // Broadcast to others
-    socket.broadcast.emit('grenadeThrown', {
-        grenadeId: grenadeId,
-        position: data.position,
-        velocity: data.velocity,
-        thrownBy: socket.id
-    });
-});
 
-socket.on('grenadeExploded', (data) => {
-    socket.broadcast.emit('grenadeExploded', {
-        position: data.position,
-        thrownBy: data.thrownBy
+    // ── COINS ────────────────────────────────────────────────────────
+    socket.on('syncCoins', (data) => {
+        // Only accept if higher than current (prevents going backward)
+        // Server is still source of truth for kills/rewards
+        const incoming = typeof data === 'object' ? data.coins : data;
+        if (typeof incoming === 'number' && incoming > (playerCoins[socket.id] || 0)) {
+            playerCoins[socket.id] = incoming;
+        }
+        socket.emit('coinUpdate', { playerId: socket.id, coins: playerCoins[socket.id] });
     });
-});
 
-socket.on('grenadeDamage', (data) => {
-    const targetPlayer = players[data.targetId];
-    if (targetPlayer) {
-        targetPlayer.health -= data.damage;
-        io.to(data.targetId).emit('playerHit', {
-            targetId: data.targetId,
-            health: targetPlayer.health,
-            damage: data.damage,
-            shooterId: data.thrownBy
-        });
-    }
-});
-    // Loadout update
-    socket.on('updateLoadout', (loadout) => {
-        playerLoadouts[socket.id] = {
-            ...playerLoadouts[socket.id],
-            ...loadout
-        };
-        
-        if (playerMode[socket.id] === 'global') {
-            socket.broadcast.emit('playerLoadoutUpdated', {
-                playerId: socket.id,
-                loadout: playerLoadouts[socket.id]
-            });
-        } else if (playerMode[socket.id] !== 'global' && socket.matchId) {
-            socket.to(socket.matchId).emit('playerLoadoutUpdated', {
-                playerId: socket.id,
-                loadout: playerLoadouts[socket.id]
-            });
-        }
-    });
-    
-    // Purchase item
-    socket.on('purchaseItem', (data) => {
-        const { itemId, cost } = data;
-        const playerId = socket.id;
-        
-        if (playerCoins[playerId] < cost) {
-            socket.emit('purchaseResult', {
-                success: false,
-                message: 'Not enough coins!'
-            });
-            return;
-        }
-        
-        playerCoins[playerId] -= cost;
-        
-        socket.emit('purchaseResult', {
-            success: true,
-            itemId: itemId,
-            newCoins: playerCoins[playerId]
-        });
-        
-        socket.emit('coinUpdate', {
-            playerId: playerId,
-            coins: playerCoins[playerId]
-        });
-        
-        console.log(`Player ${playerId} purchased ${itemId} for ${cost} coins`);
-    });
-    
-    // Movement - CRITICAL FIX: Only broadcast to same mode
+    // ── MOVEMENT ─────────────────────────────────────────────────────
     socket.on('move', (data) => {
-        if (players[socket.id]) {
-            players[socket.id].position = data.position;
-            players[socket.id].rotation = data.rotation;
-            
-            // If in a custom match, broadcast only to that match room
-            if (data.matchId && customMatches[data.matchId]) {
-                socket.to(data.matchId).emit('playerMoved', {
-                    playerId: socket.id,
-                    position: data.position,
-                    rotation: data.rotation
-                });
-            } else if (playerMode[socket.id] === 'global') {
-                // Regular multiplayer - broadcast only to other global players
-                socket.broadcast.emit('playerMoved', {
-                    playerId: socket.id,
-                    position: data.position,
-                    rotation: data.rotation
-                });
-            }
+        if (!players[socket.id]) return;
+        players[socket.id].position = data.position;
+        players[socket.id].rotation = data.rotation;
+        if (data.matchId && customMatches[data.matchId]) {
+            socket.to(data.matchId).emit('playerMoved', { playerId: socket.id, position: data.position, rotation: data.rotation });
+        } else if (playerMode[socket.id] === 'global') {
+            socket.broadcast.emit('playerMoved', { playerId: socket.id, position: data.position, rotation: data.rotation });
         }
     });
-    
-    // Shooting
+
+    // ── SHOOT ────────────────────────────────────────────────────────
     socket.on('shoot', (data) => {
-        if (playerMode[socket.id] === 'global') {
-            socket.broadcast.emit('playerShot', {
-                playerId: socket.id,
-                from: data.from,
-                direction: data.direction
-            });
-        } else if (playerMode[socket.id] !== 'global' && socket.matchId) {
-            socket.to(socket.matchId).emit('playerShot', {
-                playerId: socket.id,
-                from: data.from,
-                direction: data.direction
-            });
-        }
+        broadcastToAudience(socket, 'playerShot', { playerId: socket.id, from: data.from, direction: data.direction });
     });
-    
-    // Ability used
-    socket.on('abilityUsed', (data) => {
-        if (playerMode[socket.id] === 'global') {
-            socket.broadcast.emit('playerUsedAbility', {
-                playerId: socket.id,
-                abilityId: data.abilityId,
-                abilityName: data.abilityName
-            });
-        } else if (playerMode[socket.id] !== 'global' && socket.matchId) {
-            socket.to(socket.matchId).emit('playerUsedAbility', {
-                playerId: socket.id,
-                abilityId: data.abilityId,
-                abilityName: data.abilityName
-            });
-        }
-    });
-    
-    // Player hit
+
+    // ── HIT (server-authoritative damage) ────────────────────────────
     socket.on('hit', (data) => {
-        const targetId = data.targetId;
+        const targetId  = data.targetId;
         const shooterId = socket.id;
-        
-        if (!players[targetId] || !players[shooterId] || targetId === shooterId) {
-            return;
-        }
-        
+        if (!players[targetId] || !players[shooterId] || targetId === shooterId) return;
+
         const targetPlayer = players[targetId];
-        const targetLoadout = playerLoadouts[targetId];
-        
-        let damage = data.damage || 25;
-        
-        if (targetLoadout && targetLoadout.equippedPerk === 'perk_tank') {
-            damage *= 0.85;
-        }
-        
-        damage = Math.round(damage);
-        
-        if (targetPlayer.shield > 0) {
-            if (targetPlayer.shield >= damage) {
-                targetPlayer.shield -= damage;
-            } else {
-                const remainingDamage = damage - targetPlayer.shield;
-                targetPlayer.shield = 0;
-                targetPlayer.health -= remainingDamage;
-            }
-        } else {
-            targetPlayer.health -= damage;
-        }
-        
-        targetPlayer.lastDamageTime = Date.now();
-        
-        // Send hit event to target
-        io.to(targetId).emit('playerHit', {
-            targetId: targetId,
-            health: targetPlayer.health,
-            shield: targetPlayer.shield,
-            damage: damage,
-            shooterId: shooterId
-        });
-        
-        // Broadcast damage visual to appropriate audience
-        if (playerMode[shooterId] === 'global' && playerMode[targetId] === 'global') {
-            socket.broadcast.emit('playerDamaged', {
-                targetId: targetId,
-                shooterId: shooterId,
-                damage: damage
-            });
-        } else if (socket.matchId) {
-            socket.to(socket.matchId).emit('playerDamaged', {
-                targetId: targetId,
-                shooterId: shooterId,
-                damage: damage
-            });
-        }
-        
-        if (targetPlayer.health <= 0) {
-            handlePlayerDeath(targetId, shooterId);
-        }
-    });
-    
-    function handlePlayerDeath(targetId, killerId) {
-        const targetPlayer = players[targetId];
-        const killerPlayer = players[killerId];
-        
-        if (!targetPlayer || !killerPlayer) return;
-        
-        targetPlayer.health = 100;
-        targetPlayer.shield = 0;
-        targetPlayer.position = { x: 0, y: 1.67, z: 0 };
-        targetPlayer.rotation = { x: 0, y: 0 };
-        targetPlayer.deaths += 1;
-        
-        killerPlayer.score += 100;
-        killerPlayer.kills += 1;
-        playerCoins[killerId] += 50;
-        
-        const killerLoadout = playerLoadouts[killerId];
-        if (killerLoadout && killerLoadout.equippedPerk === 'perk_lifestealer') {
-            killerPlayer.health = Math.min(100, killerPlayer.health + 20);
-        }
-        
-        // Broadcast death to appropriate audience
-        if (playerMode[targetId] === 'global' && playerMode[killerId] === 'global') {
-            io.emit('playerDied', {
-                targetId: targetId,
-                killerId: killerId,
-                killerScore: killerPlayer.score
-            });
-        } else if (socket.matchId) {
-            io.to(socket.matchId).emit('playerDied', {
-                targetId: targetId,
-                killerId: killerId,
-                killerScore: killerPlayer.score
-            });
-        }
-        
-        io.to(killerId).emit('scoreUpdate', {
-            playerId: killerId,
-            score: killerPlayer.score,
-            kills: killerPlayer.kills
-        });
-        
-        io.to(killerId).emit('coinUpdate', {
-            playerId: killerId,
-            coins: playerCoins[killerId]
-        });
-        
-        io.to(targetId).emit('playerRespawn', {
-            health: 100,
-            shield: 0
-        });
-        
-        console.log(`Player ${killerId} killed ${targetId}`);
-    }
-    
-    // Shield activation
-    socket.on('activateShield', (data) => {
-        const playerId = socket.id;
-        const player = players[playerId];
-        
-        if (!player) return;
-        
-        player.shield = data.shieldAmount || 0;
-        
-        if (playerMode[playerId] === 'global') {
-            socket.broadcast.emit('playerShieldActivated', {
-                playerId: playerId,
-                shieldAmount: player.shield
-            });
-        } else if (playerMode[playerId] !== 'global' && socket.matchId) {
-            socket.to(socket.matchId).emit('playerShieldActivated', {
-                playerId: playerId,
-                shieldAmount: player.shield
-            });
-        }
-        
-        io.to(playerId).emit('shieldUpdate', {
-            shield: player.shield
-        });
-    });
-    
-    // ADMIN ACTIONS
-    socket.on('adminAction', (data) => {
-        const { type, targetId, amount, position, duration, enabled, multiplier } = data;
-        
-        switch(type) {
-            case 'heal':
-                if (players[targetId]) {
-                    players[targetId].health = 100;
-                    players[targetId].shield = 0;
-                    io.to(targetId).emit('adminHeal', {
-                        health: 100
-                    });
-                    console.log(`✨ Admin healed player ${targetId}`);
-                }
-                break;
-            case 'kill':
-                if (players[targetId]) {
-                    players[targetId].health = 0;
-                    handlePlayerDeath(targetId, socket.id);
-                    console.log(`💀 Admin killed player ${targetId}`);
-                }
-                break;
-            case 'giveCoins':
-                if (playerCoins[targetId] !== undefined) {
-                    playerCoins[targetId] += amount || 0;
-                    io.to(targetId).emit('coinUpdate', {
-                        playerId: targetId,
-                        coins: playerCoins[targetId]
-                    });
-                    console.log(`💰 Admin gave ${amount} coins to ${targetId}`);
-                }
-                break;
-            case 'setCoins':
-                if (playerCoins[targetId] !== undefined) {
-                    playerCoins[targetId] = amount || 0;
-                    io.to(targetId).emit('coinUpdate', {
-                        playerId: targetId,
-                        coins: playerCoins[targetId]
-                    });
-                    console.log(`💰 Admin set ${targetId} coins to ${amount}`);
-                }
-                break;
-            case 'setHealth':
-                if (players[targetId]) {
-                    players[targetId].health = Math.max(0, Math.min(100, amount || 100));
-                    io.to(targetId).emit('adminSetHealth', {
-                        health: players[targetId].health
-                    });
-                    console.log(`❤️ Admin set ${targetId} health to ${amount}`);
-                }
-                break;
-            case 'teleport':
-                if (players[targetId] && position) {
-                    players[targetId].position = position;
-                    io.to(targetId).emit('adminTeleport', {
-                        position: position
-                    });
-                    console.log(`🌀 Admin teleported ${targetId} to spawn`);
-                }
-                break;
-            case 'freeze':
-                if (players[targetId]) {
-                    io.to(targetId).emit('adminFreeze', {
-                        duration: duration || 5000
-                    });
-                    console.log(`❄️ Admin froze ${targetId} for ${duration}ms`);
-                }
-                break;
-            case 'kick':
-                if (players[targetId]) {
-                    io.to(targetId).emit('adminKick', {
-                        reason: 'Kicked by admin'
-                    });
-                    setTimeout(() => {
-                        io.sockets.sockets.get(targetId)?.disconnect(true);
-                    }, 1000);
-                    console.log(`🚫 Admin kicked ${targetId}`);
-                }
-                break;
-            case 'godMode':
-                if (players[targetId]) {
-                    io.to(targetId).emit('adminGodMode', {
-                        enabled: enabled
-                    });
-                    console.log(`👑 Admin ${enabled ? 'enabled' : 'disabled'} god mode for ${targetId}`);
-                }
-                break;
-            case 'resetStats':
-                if (players[targetId]) {
-                    players[targetId].score = 0;
-                    players[targetId].kills = 0;
-                    players[targetId].deaths = 0;
-                    io.to(targetId).emit('adminResetStats', {
-                        score: 0,
-                        kills: 0,
-                        deaths: 0
-                    });
-                    console.log(`📊 Admin reset stats for ${targetId}`);
-                }
-                break;
-            case 'speedMultiplier':
-                if (players[targetId]) {
-                    io.to(targetId).emit('adminSpeedMultiplier', {
-                        multiplier: multiplier || 1.0
-                    });
-                    console.log(`⚡ Admin set ${targetId} speed to ${multiplier}x`);
-                }
-                break;
-        }
-    });
-    
-    // Health update (for healing abilities)
-    socket.on('healPlayer', (data) => {
-        const playerId = socket.id;
-        const player = players[playerId];
-        
-        if (!player) return;
-        
-        player.health = Math.min(100, player.health + (data.amount || 0));
-        
-        io.to(playerId).emit('playerHealthUpdate', {
-            playerId: playerId,
-            health: player.health
-        });
-    });
-    
-    // COPPA-COMPLIANT CHAT HANDLER
-    socket.on('chatMessage', async (data) => {
-        const message = data.message.trim();
-        const username = players[socket.id]?.username || 'Guest';
-        
-        if (!message || message.length === 0) return;
-        
-        if (message.length > 100) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Message too long (max 100 characters)'
-            });
-            return;
-        }
-        
-        if (message.length < 2) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Message too short'
-            });
-            return;
-        }
-        
-        if (isSpam(socket.id, message)) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Please wait before sending another message'
-            });
-            return;
-        }
-        
-        const isSafe = await moderateMessage(message);
-        
-        if (!isSafe) {
-            socket.emit('chatMessage', {
-                username: 'System',
-                message: '⚠️ Your message was blocked. Please keep chat friendly!'
-            });
-            console.log(`❌ Blocked message from ${username}: "${message}"`);
-            return;
-        }
-        
-        // Send chat to appropriate audience
-        if (playerMode[socket.id] === 'global') {
-            io.emit('chatMessage', {
-                username: username,
-                message: message
-            });
-        } else if (playerMode[socket.id] !== 'global' && socket.matchId) {
-            io.to(socket.matchId).emit('chatMessage', {
-                username: username,
-                message: message
-            });
-        }
-        
-        console.log(`💬 Chat from ${username}: "${message}"`);
-    });
-    
-    // Create Match
-    socket.on('createMatch', (data) => {
-        const matchId = 'match_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-        const matchCode = data.private ? generateMatchCode() : null;
-        
-        customMatches[matchId] = {
-            id: matchId,
-            name: data.name,
-            host: socket.id,
-            hostName: data.host,
-            maxPlayers: data.maxPlayers,
-            mode: data.mode,
-            timeLimit: data.timeLimit,
-            private: data.private,
-            code: matchCode,
-            players: [socket.id],
-            startTime: Date.now()
+        const loadout      = playerLoadouts[shooterId];
+
+        // Look up damage from gun definition — never trust client
+        const GUNS = {
+            'gun_semi_auto':        { damage: 12 },
+            'gun_full_auto':        { damage: 7  },
+            'gun_burst':            { damage: 18 },
+            'gun_sniper':           { damage: 45 },
+            'gun_battle_rifle':     { damage: 16 },
+            'gun_smg':              { damage: 10 },
+            'gun_lmg':              { damage: 6  },
+            'gun_shotgun':          { damage: 18 },
+            'gun_marksman':         { damage: 50 },
+            'gun_carbine':          { damage: 10 },
+            'gun_auto_shotgun':     { damage: 5  },
+            'gun_semi_auto_sniper': { damage: 22 },
+            'gun_full_auto_sniper': { damage: 13 },
+            'gun_burst_dmr':        { damage: 32 },
+            'gun_burst_lmg':        { damage: 12 },
+            'gun_quadburst':        { damage: 16 },
+            'gun_burst_carbine':    { damage: 15 },
         };
-        
-        // Switch player to match mode
+
+        const equippedGun = loadout?.equippedGun || 'gun_semi_auto';
+        let damage = GUNS[equippedGun]?.damage || 12;
+        if (loadout?.equippedPerk === 'perk_tank') damage = Math.round(damage * 0.85);
+
+        if (targetPlayer.shield > 0) {
+            if (targetPlayer.shield >= damage) { targetPlayer.shield -= damage; damage = 0; }
+            else { damage -= targetPlayer.shield; targetPlayer.shield = 0; }
+        }
+        targetPlayer.health -= damage;
+        targetPlayer.lastDamageTime = Date.now();
+
+        io.to(targetId).emit('playerHit', {
+            targetId, health: targetPlayer.health, shield: targetPlayer.shield,
+            damage, shooterId
+        });
+        broadcastToAudience(socket, 'playerDamaged', { targetId, shooterId, damage });
+
+        if (targetPlayer.health <= 0) handlePlayerDeath(targetId, shooterId);
+    });
+
+    // ── DEATH ────────────────────────────────────────────────────────
+    function handlePlayerDeath(targetId, killerId) {
+        const target = players[targetId];
+        const killer = players[killerId];
+        if (!target || !killer) return;
+
+        target.health = 100; target.shield = 0;
+        target.position = { x: 0, y: 1.67, z: 0 };
+        target.deaths += 1;
+        killer.score  += 100;
+        killer.kills  += 1;
+        playerCoins[killerId] = (playerCoins[killerId] || 0) + 50;
+
+        const killerMode = playerMode[killerId];
+        const targetMode = playerMode[targetId];
+        if (killerMode === 'global' && targetMode === 'global') {
+            io.emit('playerDied', { targetId, killerId, killerScore: killer.score });
+        } else {
+            const room = customMatches[socket.matchId] ? socket.matchId : null;
+            if (room) io.to(room).emit('playerDied', { targetId, killerId, killerScore: killer.score });
+        }
+        io.to(killerId).emit('scoreUpdate', { playerId: killerId, score: killer.score, kills: killer.kills });
+        io.to(killerId).emit('coinUpdate',  { playerId: killerId, coins: playerCoins[killerId] });
+        io.to(targetId).emit('playerRespawn', { health: 100, shield: 0 });
+    }
+
+    // ── GRENADE ──────────────────────────────────────────────────────
+    socket.on('throwGrenade', (data) => {
+        const id = 'grenade_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        activeGrenades[id] = { id, position: data.position, velocity: data.velocity, thrownBy: socket.id };
+        broadcastToAudience(socket, 'grenadeThrown', { grenadeId: id, position: data.position, velocity: data.velocity, thrownBy: socket.id });
+    });
+    socket.on('grenadeExploded', (data) => {
+        broadcastToAudience(socket, 'grenadeExploded', { position: data.position, thrownBy: data.thrownBy });
+    });
+    socket.on('grenadeDamage', (data) => {
+        const target = players[data.targetId];
+        if (!target) return;
+        const damage = Math.min(data.damage, 100); // cap at 100
+        target.health -= damage;
+        io.to(data.targetId).emit('playerHit', { targetId: data.targetId, health: target.health, damage, shooterId: data.thrownBy });
+        if (target.health <= 0) handlePlayerDeath(data.targetId, data.thrownBy);
+    });
+
+    // ── CHAT ─────────────────────────────────────────────────────────
+    socket.on('chatMessage', async (data) => {
+        const message  = data.message.trim();
+        const username = players[socket.id]?.username || 'Guest';
+        if (!message || message.length < 2 || message.length > 100) return;
+        if (isSpam(socket.id, message)) {
+            socket.emit('chatMessage', { username: 'System', message: '⚠️ Slow down!' });
+            return;
+        }
+        const safe = await moderateMessage(message);
+        if (!safe) {
+            socket.emit('chatMessage', { username: 'System', message: '⚠️ Message blocked.' });
+            return;
+        }
+        emitToAudience(socket, 'chatMessage', { username, message });
+    });
+
+    // ── LOADOUT ──────────────────────────────────────────────────────
+    socket.on('updateLoadout', (loadout) => {
+        playerLoadouts[socket.id] = { ...playerLoadouts[socket.id], ...loadout };
+        broadcastToAudience(socket, 'playerLoadoutUpdated', { playerId: socket.id, loadout: playerLoadouts[socket.id] });
+    });
+
+    // ── HEAL ─────────────────────────────────────────────────────────
+    socket.on('healPlayer', (data) => {
+        const p = players[socket.id];
+        if (!p) return;
+        p.health = Math.min(100, p.health + (data.amount || 0));
+        io.to(socket.id).emit('playerHealthUpdate', { playerId: socket.id, health: p.health });
+    });
+
+    // ── SHIELD ───────────────────────────────────────────────────────
+    socket.on('activateShield', (data) => {
+        const p = players[socket.id];
+        if (!p) return;
+        p.shield = data.shieldAmount || 0;
+        broadcastToAudience(socket, 'playerShieldActivated', { playerId: socket.id, shieldAmount: p.shield });
+        io.to(socket.id).emit('shieldUpdate', { shield: p.shield });
+    });
+
+    // ── MATCHES ──────────────────────────────────────────────────────
+    socket.on('createMatch', (data) => {
+        const matchId   = 'match_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        const matchCode = data.private ? generateMatchCode() : null;
+        customMatches[matchId] = {
+            id: matchId, name: data.name, host: socket.id, hostName: data.host,
+            maxPlayers: data.maxPlayers, mode: data.mode, timeLimit: data.timeLimit,
+            private: data.private, code: matchCode, players: [socket.id], startTime: Date.now()
+        };
         playerMode[socket.id] = matchId;
         socket.matchId = matchId;
         socket.join(matchId);
-        
-        socket.emit('matchCreated', {
-            id: matchId,
-            name: data.name,
-            code: matchCode,
-            maxPlayers: data.maxPlayers,
-            mode: data.mode,
-            timeLimit: data.timeLimit,
-            host: data.host,
-            players: 1
+        socket.emit('matchCreated', { id: matchId, name: data.name, code: matchCode, maxPlayers: data.maxPlayers, mode: data.mode, timeLimit: data.timeLimit, host: data.host, players: 1 });
+    });
+
+    socket.on('joinMatch', (data) => {
+        let match = data.code
+            ? Object.values(customMatches).find(m => m.code === data.code)
+            : customMatches[data.matchId];
+        if (!match)               { socket.emit('matchError', 'Match not found'); return; }
+        if (match.private && !data.code) { socket.emit('matchError', 'Private match'); return; }
+        if (match.players.length >= match.maxPlayers) { socket.emit('matchError', 'Match is full'); return; }
+
+        match.players.push(socket.id);
+        playerMode[socket.id] = match.id;
+        socket.matchId = match.id;
+        socket.join(match.id);
+
+        match.players.forEach(pid => {
+            if (pid !== socket.id && players[pid])
+                socket.emit('playerJoined', players[pid]);
         });
-        
-        console.log(`✅ Match created: ${data.name} (${matchId})`);
+        socket.to(match.id).emit('playerJoined', players[socket.id]);
+        socket.emit('matchJoined', { id: match.id, name: match.name, code: match.code, maxPlayers: match.maxPlayers, mode: match.mode, timeLimit: match.timeLimit, host: match.hostName, players: match.players.length });
+        io.to(match.id).emit('matchUpdate', { players: match.players.length });
     });
-    
-    // Join Match - FIXED: Send existing players to joiner
-// Join Match - COMPLETELY FIXED
-socket.on('joinMatch', (data) => {
-    let match = null;
-    
-    if (data.code) {
-        match = Object.values(customMatches).find(m => m.code === data.code);
-        if (!match) {
-            socket.emit('matchError', 'Invalid match code');
-            return;
-        }
-    } else if (data.matchId) {
-        match = customMatches[data.matchId];
-        if (!match) {
-            socket.emit('matchError', 'Match not found');
-            return;
-        }
-        if (match.private) {
-            socket.emit('matchError', 'This match is private');
-            return;
-        }
-    }
-    
-    if (!match) {
-        socket.emit('matchError', 'Match not found');
-        return;
-    }
-    
-    if (match.players.length >= match.maxPlayers) {
-        socket.emit('matchError', 'Match is full');
-        return;
-    }
-    
-    // Add player to match
-    match.players.push(socket.id);
-    
-    // Switch player to match mode
-    playerMode[socket.id] = match.id;
-    socket.matchId = match.id;
-    socket.join(match.id);
-    
-    // CRITICAL FIX 1: Send ALL existing players in the match to the new player
-    match.players.forEach(playerId => {
-        if (playerId !== socket.id && players[playerId]) {
-            console.log(`📤 Sending existing player ${playerId} to new player ${socket.id}`);
-            socket.emit('playerJoined', players[playerId]);
-        }
-    });
-    
-    // CRITICAL FIX 2: Notify ALL players in match about the new player
-    // Use io.to(match.id) instead of socket.to(match.id) to ensure everyone gets it
-    console.log(`📢 Broadcasting new player ${socket.id} to all in match ${match.id}`);
-    socket.to(match.id).emit('playerJoined', players[socket.id]);
-    
-    // Send match joined confirmation
-    socket.emit('matchJoined', {
-        id: match.id,
-        name: match.name,
-        code: match.code,
-        maxPlayers: match.maxPlayers,
-        mode: match.mode,
-        timeLimit: match.timeLimit,
-        host: match.hostName,
-        players: match.players.length
-    });
-    
-    // Update player count for everyone in the match
-    io.to(match.id).emit('matchUpdate', {
-        players: match.players.length
-    });
-    
-    console.log(`✅ Player ${socket.id} joined match ${match.name}. Total players: ${match.players.length}`);
-});
-    
-    // Get Match List
+
     socket.on('getMatches', () => {
-        const publicMatches = Object.values(customMatches)
+        socket.emit('matchList', Object.values(customMatches)
             .filter(m => !m.private)
-            .map(m => ({
-                id: m.id,
-                name: m.name,
-                host: m.hostName,
-                players: m.players.length,
-                maxPlayers: m.maxPlayers,
-                mode: m.mode,
-                timeLimit: m.timeLimit
-            }));
-        
-        socket.emit('matchList', publicMatches);
+            .map(m => ({ id: m.id, name: m.name, host: m.hostName, players: m.players.length, maxPlayers: m.maxPlayers, mode: m.mode, timeLimit: m.timeLimit })));
     });
-    
-    // Disconnect - FIXED: Proper cleanup
+
+    // ── ADMIN ACTIONS ────────────────────────────────────────────────
+    socket.on('adminAction', async (data) => {
+        // Every admin action must be verified
+        if (!isAdmin(socket.id)) {
+            socket.emit('adminError', 'Not authorized');
+            console.warn(`⚠️ Non-admin ${socket.id} attempted adminAction: ${data.type}`);
+            return;
+        }
+
+        const { type, targetId, targetUsername, amount, position, duration, enabled, multiplier, reason, duration_hours, banIP } = data;
+        console.log(`👑 Admin ${adminSessions[socket.id].username} → ${type} on ${targetUsername || targetId}`);
+
+        switch (type) {
+
+            case 'getPlayers':
+                socket.emit('adminPlayerList', { players: getOnlinePlayerList() });
+                break;
+
+            case 'ban': {
+                const targetSocket = io.sockets.sockets.get(targetId);
+                const targetAccId  = targetSocket?.accountId;
+
+                if (targetAccId) bannedAccounts.add(targetAccId);
+
+                if (banIP && targetSocket) {
+                    const tIP = getClientIP(targetSocket);
+                    bannedIPs.add(tIP);
+                    console.log(`🚫 IP banned: ${tIP}`);
+                }
+
+                if (targetUsername) {
+                    await banInDatabase(targetUsername, reason || 'Banned by admin', duration_hours || null);
+                }
+
+                if (targetSocket) {
+                    targetSocket.emit('banned', {
+                        reason: reason || 'You have been banned from Shotstrike.',
+                        until:  duration_hours
+                            ? new Date(Date.now() + duration_hours * 3600000).toUTCString()
+                            : null
+                    });
+                    setTimeout(() => targetSocket.disconnect(true), 1500);
+                }
+
+                // Notify all admins
+                Object.keys(adminSessions).forEach(sid => {
+                    if (adminSessions[sid].isAdmin)
+                        io.to(sid).emit('adminLog', { message: `${adminSessions[socket.id].username} banned ${targetUsername || targetId}` });
+                });
+                break;
+            }
+
+            case 'unban': {
+                if (targetUsername) await unbanInDatabase(targetUsername);
+                // Remove from caches (we don't know the accountId easily here so clear all — harmless)
+                socket.emit('adminSuccess', `${targetUsername} unbanned`);
+                break;
+            }
+
+            case 'kick': {
+                const ts = io.sockets.sockets.get(targetId);
+                if (ts) {
+                    ts.emit('kicked', { reason: reason || 'Kicked by an admin.' });
+                    setTimeout(() => ts.disconnect(true), 1000);
+                }
+                break;
+            }
+
+            case 'heal': {
+                const p = players[targetId];
+                if (p) { p.health = 100; p.shield = 0; io.to(targetId).emit('adminHeal', { health: 100 }); }
+                break;
+            }
+
+            case 'kill': {
+                const p = players[targetId];
+                if (p) { p.health = 0; handlePlayerDeath(targetId, socket.id); }
+                break;
+            }
+
+            case 'giveCoins': {
+                playerCoins[targetId] = (playerCoins[targetId] || 0) + (amount || 0);
+                io.to(targetId).emit('coinUpdate', { playerId: targetId, coins: playerCoins[targetId] });
+                break;
+            }
+
+            case 'setHealth': {
+                const p = players[targetId];
+                if (p) { p.health = Math.max(0, Math.min(100, amount || 100)); io.to(targetId).emit('adminSetHealth', { health: p.health }); }
+                break;
+            }
+
+            case 'teleport': {
+                const p = players[targetId];
+                if (p && position) { p.position = position; io.to(targetId).emit('adminTeleport', { position }); }
+                break;
+            }
+
+            case 'freeze': {
+                io.to(targetId).emit('adminFreeze', { duration: duration || 5000 });
+                break;
+            }
+
+            case 'godMode': {
+                io.to(targetId).emit('adminGodMode', { enabled });
+                break;
+            }
+
+            case 'resetStats': {
+                const p = players[targetId];
+                if (p) { p.score = 0; p.kills = 0; p.deaths = 0; io.to(targetId).emit('adminResetStats', { score: 0 }); }
+                break;
+            }
+
+            case 'speedMultiplier': {
+                io.to(targetId).emit('adminSpeedMultiplier', { multiplier: multiplier || 1.0 });
+                break;
+            }
+
+            case 'broadcastMessage': {
+                io.emit('chatMessage', { username: '📢 Admin', message: data.message || '' });
+                break;
+            }
+
+            case 'getServerStats': {
+                socket.emit('adminServerStats', {
+                    totalPlayers:  Object.keys(players).length,
+                    totalMatches:  Object.keys(customMatches).length,
+                    bannedAccounts: bannedAccounts.size,
+                    bannedIPs:     bannedIPs.size,
+                    uptime:        process.uptime(),
+                });
+                break;
+            }
+        }
+    });
+
+    // ── DISCONNECT ───────────────────────────────────────────────────
     socket.on('disconnect', () => {
-        console.log('Player disconnected:', socket.id);
-        
-        // Only broadcast leave to global players if they were in global mode
+        console.log(`❌ Disconnected: ${socket.id}`);
+
         if (playerMode[socket.id] === 'global') {
             io.emit('playerLeft', socket.id);
         } else if (socket.matchId && customMatches[socket.matchId]) {
-            // Broadcast leave to match players
             io.to(socket.matchId).emit('playerLeft', socket.id);
+            const match = customMatches[socket.matchId];
+            match.players = match.players.filter(p => p !== socket.id);
+            if (match.players.length === 0) delete customMatches[socket.matchId];
+            else io.to(socket.matchId).emit('matchUpdate', { players: match.players.length });
         }
-        
+
         delete players[socket.id];
         delete playerLoadouts[socket.id];
         delete playerCoins[socket.id];
         delete messageHistory[socket.id];
         delete playerMode[socket.id];
-        
-        // Clean up custom match
-        if (socket.matchId && customMatches[socket.matchId]) {
-            const match = customMatches[socket.matchId];
-            match.players = match.players.filter(p => p !== socket.id);
-            
-            if (match.players.length === 0) {
-                delete customMatches[socket.matchId];
-                console.log(`🗑️ Deleted empty match ${socket.matchId}`);
-            } else {
-                io.to(socket.matchId).emit('matchUpdate', {
-                    players: match.players.length
-                });
-            }
-        }
+        delete adminSessions[socket.id];
     });
-    
-    // Passive coin generation (every minute)
-    setInterval(() => {
+
+    // Passive coins — single interval cleared on disconnect
+    const coinInterval = setInterval(() => {
         if (players[socket.id]) {
-            playerCoins[socket.id] += 10;
-            socket.emit('coinUpdate', {
-                playerId: socket.id,
-                coins: playerCoins[socket.id]
-            });
+            playerCoins[socket.id] = (playerCoins[socket.id] || 0) + 10;
+            socket.emit('coinUpdate', { playerId: socket.id, coins: playerCoins[socket.id] });
         }
     }, 60000);
+    socket.on('disconnect', () => clearInterval(coinInterval));
 });
 
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
-    console.log(`🎮 Server running on port ${PORT}`);
-    console.log('👶 COPPA-COMPLIANT MODE: Safe for users under 13');
-    console.log('✅ Multi-layer chat filtering active');
-    console.log('✅ Custom match system with COMPLETE isolation');
+    console.log(`🎮 Shotstrike server on port ${PORT}`);
 });
