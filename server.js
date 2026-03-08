@@ -568,7 +568,29 @@ io.on('connection', (socket) => {
                 }
                 break;
             }
-
+            case 'kill': {
+                const p = players[targetId];
+                if (p) {
+                    // Directly kill without needing a valid "killer" player
+                    p.health = 0;
+                    p.deaths += 1;
+                    p.health = 100;
+                    p.shield = 0;
+                    p.position = { x: 0, y: 1.67, z: 0 };
+                    
+                    io.emit('playerDied', { targetId, killerId: targetId, killerScore: 0 });
+                    io.to(targetId).emit('playerRespawn', { health: 100, shield: 0 });
+                    
+                    if (data.reason) {
+                        io.to(targetId).emit('adminKilled', { message: data.reason });
+                    }
+                    
+                    socket.emit('adminSuccess', `Killed ${data.targetUsername}`);
+                } else {
+                    socket.emit('adminError', 'Player not found');
+                }
+                break;
+            }
             case 'heal': {
                 const p = players[targetId];
                 if (p) { p.health = 100; p.shield = 0; io.to(targetId).emit('adminHeal', { health: 100 }); }
