@@ -743,6 +743,22 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => clearInterval(coinInterval));
 });
 
+// Global health regen loop — smooth, runs every 50ms for all players
+const REGEN_RATE = 5;      // HP per second
+const REGEN_TICK = 50;     // ms between ticks
+const REGEN_DELAY = 4000;  // ms after damage before regen starts
+
+setInterval(() => {
+    const now = Date.now();
+    for (const id in players) {
+        const p = players[id];
+        if (!p || p.health <= 0 || p.health >= 100) continue;
+        if (now - (p.lastDamageTime || 0) < REGEN_DELAY) continue;
+        p.health = Math.min(100, p.health + (REGEN_RATE * REGEN_TICK / 1000));
+        io.to(id).emit('playerHealthUpdate', { playerId: id, health: Math.round(p.health) });
+    }
+}, REGEN_TICK);
+
 const PORT = process.env.PORT || 3000;
 http.listen(PORT, () => {
     console.log(`🎮 Shotstrike server on port ${PORT}`);
