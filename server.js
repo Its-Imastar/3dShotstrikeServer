@@ -403,7 +403,7 @@ const GUNS = {
             const room = targetSocket?.matchId || null;
             if (room) io.to(room).emit('playerDied', { targetId, killerId, killerScore: killer.score });
         }
-        io.to(killerId).emit('scoreUpdate', { playerId: killerId, score: killer.score, kills: killer.kills });
+        io.emit('scoreUpdate', { playerId: killerId, score: killer.score, kills: killer.kills });
         io.to(killerId).emit('coinUpdate',  { playerId: killerId, coins: playerCoins[killerId] });
         io.to(targetId).emit('playerRespawn', { health: 100, shield: 0 });
     }
