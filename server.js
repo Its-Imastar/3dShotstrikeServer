@@ -60,7 +60,6 @@ const basicFilter = (message) => {
 };
 
 async function moderateMessage(message) {
-    if (!basicFilter(message)) return false;
     if (!CLOUDFLARE_API_KEY) return true;
     try {
         const res = await fetch(CF_URL, {
