@@ -136,6 +136,32 @@ async function banInDatabase(username, reason, duration_hours) {
     }
 }
 
+async function banIPInDatabase(ip, reason, duration_hours) {
+    try {
+        await fetch(`${API_URL}/ban-ip`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Admin-Secret': ADMIN_SECRET
+            },
+            body: JSON.stringify({ ip, reason, duration_hours: duration_hours || null })
+        });
+    } catch (e) { console.error('IP ban DB failed:', e.message); }
+}
+
+async function loadBannedIPsFromDB() {
+    try {
+        const res = await fetch(`${API_URL}/banned-ips`, {
+            headers: { 'X-Admin-Secret': ADMIN_SECRET }
+        });
+        const data = await res.json();
+        if (data.ips) {
+            data.ips.forEach(ip => bannedIPs.add(ip));
+            console.log(`✅ Loaded ${bannedIPs.size} banned IPs from DB`);
+        }
+    } catch (e) { console.warn('Could not load banned IPs from DB'); }
+}
+
 async function unbanInDatabase(username) {
     try {
         await fetch(`${API_URL}/unban`, {
@@ -150,6 +176,8 @@ async function unbanInDatabase(username) {
         console.error('DB unban failed:', e.message);
     }
 }
+
+loadBannedIPsFromDB();
 
 function isSpam(playerId, message) {
     if (!messageHistory[playerId]) messageHistory[playerId] = [];
@@ -535,8 +563,13 @@ const GUNS = {
 
                 if (banIP && targetSocket) {
                     const tIP = getClientIP(targetSocket);
-                    bannedIPs.add(tIP);
-                    console.log(`🚫 IP banned: ${tIP}`);
+                    if (tIP && tIP !== '127.0.0.1' && tIP !== '::1') {
+                        bannedIPs.add(tIP);
+                        await banIPInDatabase(tIP, reason || 'IP banned by admin', duration_hours || null);
+                        console.log(`🚫 IP banned: ${tIP}`);
+                    } else {
+                        socket.emit('adminError', 'Could not determine real IP - IP ban skipped');
+                    }
                 }
 
                 if (targetUsername) {
