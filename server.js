@@ -333,28 +333,35 @@ io.on('connection', (socket) => {
         const loadout      = playerLoadouts[shooterId];
 
         // Look up damage from gun definition — never trust client
-        const GUNS = {
-            'gun_semi_auto':        { damage: 12 },
-            'gun_full_auto':        { damage: 7  },
-            'gun_burst':            { damage: 18 },
-            'gun_sniper':           { damage: 45 },
-            'gun_battle_rifle':     { damage: 16 },
-            'gun_smg':              { damage: 10 },
-            'gun_lmg':              { damage: 6  },
-            'gun_shotgun':          { damage: 18 },
-            'gun_marksman':         { damage: 50 },
-            'gun_carbine':          { damage: 10 },
-            'gun_auto_shotgun':     { damage: 5  },
-            'gun_semi_auto_sniper': { damage: 22 },
-            'gun_full_auto_sniper': { damage: 13 },
-            'gun_burst_dmr':        { damage: 32 },
-            'gun_burst_lmg':        { damage: 12 },
-            'gun_quadburst':        { damage: 16 },
-            'gun_burst_carbine':    { damage: 15 },
-        };
+const GUNS = {
+    'gun_semi_auto':        { damage: 12 },
+    'gun_full_auto':        { damage: 7  },
+    'gun_burst':            { damage: 20 },
+    'gun_sniper':           { damage: 55 },
+    'gun_battle_rifle':     { damage: 15 },
+    'gun_smg':              { damage: 10 },
+    'gun_lmg':              { damage: 6  },
+    'gun_shotgun':          { damage: 18 },
+    'gun_marksman':         { damage: 50 },
+    'gun_carbine':          { damage: 10 },
+    'gun_auto_shotgun':     { damage: 5  },
+    'gun_semi_auto_sniper': { damage: 22 },
+    'gun_full_auto_sniper': { damage: 13 },
+    'gun_burst_dmr':        { damage: 32 },
+    'gun_burst_lmg':        { damage: 12 },
+    'gun_quadburst':        { damage: 16 },
+    'gun_burst_carbine':    { damage: 15 },
+};
 
         const equippedGun = loadout?.equippedGun || 'gun_semi_auto';
-        let damage = GUNS[equippedGun]?.damage || 12;
+        const clientDamage = typeof data.damage === 'number' ? data.damage : null;
+        const baseDamage   = GUNS[equippedGun]?.damage || 12;
+        
+        // Trust client damage only if it's within a reasonable range of the server value
+        // This allows pellet counts and upgrades while preventing cheating
+        let damage = (clientDamage && clientDamage <= baseDamage * 3 && clientDamage > 0)
+            ? clientDamage
+            : baseDamage;
         if (loadout?.equippedPerk === 'perk_tank') damage = Math.round(damage * 0.85);
 
         if (targetPlayer.shield > 0) {
