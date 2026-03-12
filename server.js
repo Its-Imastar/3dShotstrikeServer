@@ -237,6 +237,31 @@ function getOnlinePlayerList() {
     }));
 }
 
+app.get('/', (req, res) => {
+    res.send(`
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Shotstrike Server</title>
+            <style>
+                body { background: #1a1a1a; color: white; font-family: Arial, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; text-align: center; }
+                h1 { color: #60a5fa; font-size: 2.5em; }
+                .status { color: #10b981; font-size: 1.2em; }
+                .players { color: #fbbf24; font-size: 1.1em; margin-top: 10px; }
+            </style>
+        </head>
+        <body>
+            <div>
+                <h1>🎮 Shotstrike Server</h1>
+                <p class="status">✅ Online</p>
+                <p class="players">👥 Players online: ${Object.keys(players).length}</p>
+                <p style="color:#6b7280; margin-top:20px;">Play at <a href="https://shotstrike.com" style="color:#60a5fa;">shotstrike.com</a></p>
+            </div>
+        </body>
+        </html>
+    `);
+});
+
 // ── SOCKET HANDLER ───────────────────────────────────────────────────────────
 io.on('connection', (socket) => {
     const clientIP = getClientIP(socket);
