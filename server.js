@@ -71,7 +71,7 @@ async function moderateMessage(message) {
             },
             body: JSON.stringify({
                 messages: [
-                    { role: 'system', content: 'You are a chat moderator for a kids video game. Respond with only SAFE or UNSAFE.' },
+                    { role: 'system', content: 'You are a chat moderator for a kids video game. Respond with only SAFE or UNSAFE. Look out for scams or sending out personal information (first name is okay). This is a shooter game, so guns and related terms are okay. Do not allow anything more than that.' },
                     { role: 'user', content: message.substring(0, 200) }
                 ]
             })
