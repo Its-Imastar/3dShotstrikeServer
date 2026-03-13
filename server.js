@@ -758,7 +758,7 @@ const GUNS = {
             }
 
             case 'broadcastMessage': {
-                io.emit('chatMessage', { username: '📢 Admin', message: data.message || '' });
+                io.emit('chatMessage', { username: 'Admin', message: data.message || '' });
                 break;
             }
 
