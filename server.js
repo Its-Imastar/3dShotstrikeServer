@@ -254,7 +254,7 @@ app.get('/', (req, res) => {
                 <h1>🎮 Shotstrike Server</h1>
                 <p class="status">✅ Online</p>
                 <p class="players">👥 Players online: ${Object.keys(players).length}</p>
-                <p style="color:#6b7280; margin-top:20px;">Play at <a href="https://shotstrike.com" style="color:#60a5fa;">shotstrike.com</a></p>
+                <p style="color:#6b7280; margin-top:20px;">Play at <a href="https://shotstrike.com" style="color:#60a5fa;">shot.strike1.workers.dev</a></p>
             </div>
         </body>
         </html>
