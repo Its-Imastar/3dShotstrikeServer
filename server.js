@@ -47,7 +47,7 @@ const GUNS = {
 // ── ANTICHEAT CONSTANTS ───────────────────────────────────────────────────────
 const AC_MAX_SPEED        = 35;    // units/sec — covers sprint + dash ability
 const AC_MAX_Y            = 80;    // above this = fly hack
-const AC_MIN_SHOT_GAP_MS  = 1;    // ms — fastest legit gun with lag buffer
+const AC_MIN_SHOT_GAP_MS  = 0;    // ms — fastest legit gun with lag buffer
 const AC_MAX_COINS_PER_MIN = 500;  // coins/min ceiling (legit max ~60)
 const AC_WARN_THRESHOLD   = 3;
 const AC_KICK_THRESHOLD   = 6;
